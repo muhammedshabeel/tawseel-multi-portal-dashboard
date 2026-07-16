@@ -23,7 +23,7 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     if out.empty:
         return out
 
-    for column in ["Status", "Priority", "Agent"]:
+    for column in ["Status", "Priority", "Agent", "Portal", "AWB"]:
         if column not in out.columns:
             out[column] = ""
 
@@ -64,23 +64,43 @@ def portal_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def agent_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Return one consolidated row per actual agent across all selected portals."""
     if df.empty:
         return pd.DataFrame()
 
     work = add_derived_columns(df)
-    grouped = work.groupby(["Portal", "Agent"], dropna=False)
-    result = grouped.agg(
-        Total=("AWB", "count"),
-        Delivered=("Is Delivered", "sum"),
-        Critical=("Is Critical", "sum"),
-        Follow_up=("Is Follow Up", "sum"),
-        OFD=("Status Group", lambda values: int(values.eq("Out for Delivery").sum())),
-        RTO=("Status Group", lambda values: int(values.eq("RTO").sum())),
-    ).reset_index()
+    work["Agent"] = (
+        work["Agent"]
+        .fillna("Unassigned")
+        .astype(str)
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+    )
+    work["Agent Key"] = work["Agent"].str.casefold()
 
-    result["Delivery Rate"] = result["Delivered"] / result["Total"].where(result["Total"].ne(0), 1)
-    result = result.rename(columns={"Follow_up": "Follow-up"})
-    return result.sort_values(["Portal", "Total"], ascending=[True, False])
+    rows: list[dict] = []
+    for _, group in work.groupby("Agent Key", dropna=False):
+        total = len(group)
+        delivered = int(group["Is Delivered"].sum())
+        portals = sorted({str(value).strip() for value in group["Portal"] if str(value).strip()})
+        rows.append(
+            {
+                "Agent": group["Agent"].iloc[0],
+                "Portals": ", ".join(portals),
+                "Portal Count": len(portals),
+                "Total": total,
+                "Delivered": delivered,
+                "Delivery Rate": delivered / total if total else 0.0,
+                "OFD": int(group["Status Group"].eq("Out for Delivery").sum()),
+                "RTO": int(group["Status Group"].eq("RTO").sum()),
+                "RTO Prepared": int(group["Status Group"].eq("RTO Prepared").sum()),
+                "Back to Store": int(group["Status Group"].eq("Back to Store").sum()),
+                "Critical": int(group["Is Critical"].sum()),
+                "Follow-up": int(group["Is Follow Up"].sum()),
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values(["Delivery Rate", "Total"], ascending=[False, False])
 
 
 def failure_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -125,10 +145,10 @@ def weekly_agent_summary(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     work["Week Start"] = work["Scheduled Date"].dt.to_period("W-SUN").apply(lambda period: period.start_time)
     grouped = (
-        work.groupby(["Week Start", "Portal", "Agent"], dropna=False)
+        work.groupby(["Week Start", "Agent"], dropna=False)
         .agg(Total=("AWB", "count"), Delivered=("Is Delivered", "sum"))
         .reset_index()
     )
     grouped["Delivery Rate"] = grouped["Delivered"] / grouped["Total"].where(grouped["Total"].ne(0), 1)
     grouped["Week"] = grouped["Week Start"].dt.strftime("%d %b %Y")
-    return grouped.sort_values(["Week Start", "Portal", "Total"], ascending=[False, True, False])
+    return grouped.sort_values(["Week Start", "Total"], ascending=[False, False])
