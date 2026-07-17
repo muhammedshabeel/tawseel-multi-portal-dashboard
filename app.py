@@ -7,10 +7,10 @@ from src.data_loader import load_all_data
 from src.metrics import add_derived_columns, portal_summary
 from src.ui import apply_filters, page_header
 
-st.set_page_config(page_title="Tawseel Control Tower", page_icon="🚚", layout="wide")
+st.set_page_config(page_title="Tawseel integrated portal", page_icon="🚚", layout="wide")
 
 page_header(
-    "Tawseel Multi-Portal Control Tower",
+    "Tawseel integrated portal",
     "Live consolidated view from all configured Tawseel Google Sheets",
 )
 
