@@ -11,7 +11,7 @@ st.set_page_config(page_title="Tawseel integrated portal", page_icon="🚚", lay
 
 page_header(
     "Tawseel integrated portal",
-    "Live consolidated view from all configured Tawseel Google Sheets",
+    "Live consolidated view from all configured Tawseel Portals",
 )
 
 try:
@@ -68,7 +68,7 @@ with left:
         st.info("No data for the selected filters.")
 
 with right:
-    st.subheader("Current status mix")
+    st.subheader("Current status")
 
     if not work.empty:
         status = (
