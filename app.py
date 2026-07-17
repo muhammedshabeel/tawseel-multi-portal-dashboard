@@ -12,6 +12,7 @@ from src.ui import (
     performance_style,
 )
 
+# Deployment marker: keep app.py and src/ui.py on the same repository revision.
 st.set_page_config(
     page_title="Tawseel Operations Dashboard",
     page_icon="🚚",
