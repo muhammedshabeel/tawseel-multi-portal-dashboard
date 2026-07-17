@@ -31,10 +31,12 @@ def _service_account_info() -> dict[str, Any]:
 def get_portal_configs() -> list[PortalConfig]:
     raw = st.secrets.get("portals", [])
     configs: list[PortalConfig] = []
+
     for item in raw:
         sheet_id = str(item.get("sheet_id", "")).strip()
         if not sheet_id or sheet_id.startswith("PASTE_"):
             continue
+
         configs.append(
             PortalConfig(
                 name=str(item.get("name", "Unnamed Portal")).strip(),
@@ -43,8 +45,10 @@ def get_portal_configs() -> list[PortalConfig]:
                 input_tab=str(item.get("input_tab", "Tawseel_AWB")).strip(),
             )
         )
+
     if not configs:
         raise RuntimeError("No valid [[portals]] entries found in Streamlit secrets.")
+
     return configs
 
 
@@ -68,31 +72,13 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "pdf": "PDF",
         "agent": "Agent",
         "priority": "Priority",
-        "amount": "Revenue",
-        "cod amount": "Revenue",
-        "cod_amount": "Revenue",
-        "actual amount": "Revenue",
-        "actual_amount": "Revenue",
-        "order amount": "Revenue",
-        "order_amount": "Revenue",
-        "price": "Revenue",
-        "total amount": "Revenue",
-        "total_amount": "Revenue",
     }
 
-    rename: dict[Any, str] = {}
-    revenue_source = None
-
+    rename = {}
     for col in df.columns:
         key = str(col).strip().lower()
         if key in aliases:
-            target = aliases[key]
-            if target == "Revenue":
-                if revenue_source is None:
-                    rename[col] = target
-                    revenue_source = col
-            else:
-                rename[col] = target
+            rename[col] = aliases[key]
 
     df = df.rename(columns=rename)
 
@@ -106,12 +92,11 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "PDF",
         "Agent",
         "Priority",
-        "Revenue",
     ]
 
     for col in required:
         if col not in df.columns:
-            df[col] = 0 if col == "Revenue" else ""
+            df[col] = ""
 
     return df[required]
 
@@ -119,9 +104,10 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(ttl=180, show_spinner=False)
 def load_portal_master(config: PortalConfig) -> pd.DataFrame:
     client = get_gspread_client()
-    ws = client.open_by_key(config.sheet_id).worksheet(config.master_tab)
-    records = ws.get_all_records(default_blank="")
+    worksheet = client.open_by_key(config.sheet_id).worksheet(config.master_tab)
+    records = worksheet.get_all_records(default_blank="")
     df = _normalize_columns(pd.DataFrame(records))
+
     df.insert(0, "Portal", config.name)
     df["AWB"] = df["AWB"].astype(str).str.strip()
     df["Agent"] = df["Agent"].replace("", "Unassigned").fillna("Unassigned")
@@ -129,18 +115,15 @@ def load_portal_master(config: PortalConfig) -> pd.DataFrame:
     df["Remarks"] = df["Remarks"].fillna("").astype(str).str.strip()
     df["Priority"] = df["Priority"].fillna("").astype(str).str.strip()
     df["Scheduled Date"] = pd.to_datetime(df["Scheduled Date"], errors="coerce", dayfirst=True)
-    df["Revenue"] = pd.to_numeric(
-        df["Revenue"].astype(str).str.replace(",", "", regex=False).str.extract(r"(-?\d+(?:\.\d+)?)")[0],
-        errors="coerce",
-    ).fillna(0.0)
+
     return df
 
 
 @st.cache_data(ttl=180, show_spinner=False)
 def load_input_count(config: PortalConfig) -> int:
     client = get_gspread_client()
-    ws = client.open_by_key(config.sheet_id).worksheet(config.input_tab)
-    values = ws.col_values(1)
+    worksheet = client.open_by_key(config.sheet_id).worksheet(config.input_tab)
+    values = worksheet.col_values(1)
     return max(len([value for value in values[1:] if str(value).strip()]), 0)
 
 
@@ -153,6 +136,7 @@ def load_all_data() -> tuple[pd.DataFrame, pd.DataFrame]:
             df = load_portal_master(config)
             input_count = load_input_count(config)
             frames.append(df)
+
             fetched = int(df["AWB"].ne("").sum())
             health_rows.append(
                 {
