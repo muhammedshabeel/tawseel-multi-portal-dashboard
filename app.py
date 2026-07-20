@@ -8,7 +8,7 @@ from src.metrics import add_derived_columns, portal_summary
 from src.ui import apply_filters, report_date_filter, show_report_period
 
 st.set_page_config(
-    page_title="Tawseel Multi-Portal Control Tower",
+    page_title="Tawseel UAE Portal",
     page_icon="🚚",
     layout="wide",
 )
@@ -25,7 +25,7 @@ if not health.empty and health["State"].eq("Failed").any():
 header_left, header_right = st.columns([2.6, 1])
 
 with header_left:
-    st.title("Tawseel Multi-Portal Control Tower")
+    st.title("Tawseel UAE Portal")
     st.caption("Live consolidated view from all configured Tawseel Google Sheets")
 
 filtered = apply_filters(data)
