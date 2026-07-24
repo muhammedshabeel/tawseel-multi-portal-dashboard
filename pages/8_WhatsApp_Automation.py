@@ -16,7 +16,7 @@ st.set_page_config(
 
 st.title("WhatsApp Automation")
 st.caption(
-    "DoubleTick template delivery and RTO tagging reports for critical Tawseel orders"
+    "DoubleTick API acceptance, final delivery statuses, and RTO tagging for critical Tawseel orders"
 )
 
 if st.button("Refresh report data", type="secondary"):
@@ -46,7 +46,7 @@ with filter_1:
 
 with filter_2:
     selected_templates = st.multiselect(
-        "Template result",
+        "Message status",
         options=template_options,
         default=template_options,
     )
@@ -83,25 +83,26 @@ filtered = filtered[
 ]
 
 total = len(filtered)
+api_accepted = int(filtered["Template Result"].eq("API_ACCEPTED").sum())
 sent = int(filtered["Template Result"].eq("SENT").sum())
+delivered = int(filtered["Template Result"].eq("DELIVERED").sum())
+read = int(filtered["Template Result"].eq("READ").sum())
 failed = int(filtered["Template Result"].eq("FAILED").sum())
-skipped = int(filtered["Template Result"].eq("SKIPPED").sum())
-baselined = int(filtered["Template Result"].eq("BASELINED").sum())
 tagged = int(filtered["Tag Result"].eq("TAGGED").sum())
-tag_failed = int(filtered["Tag Result"].eq("FAILED").sum())
 
-metric_columns = st.columns(6)
+metric_columns = st.columns(7)
 metric_columns[0].metric("Report Records", f"{total:,}")
-metric_columns[1].metric("Templates Sent", f"{sent:,}")
-metric_columns[2].metric("Template Failed", f"{failed:,}")
-metric_columns[3].metric("RTO Tagged", f"{tagged:,}")
-metric_columns[4].metric("Tag Failed", f"{tag_failed:,}")
-metric_columns[5].metric("Baselined", f"{baselined:,}")
+metric_columns[1].metric("API Accepted", f"{api_accepted:,}")
+metric_columns[2].metric("Sent", f"{sent:,}")
+metric_columns[3].metric("Delivered", f"{delivered:,}")
+metric_columns[4].metric("Read", f"{read:,}")
+metric_columns[5].metric("Failed", f"{failed:,}")
+metric_columns[6].metric("RTO Tagged", f"{tagged:,}")
 
 chart_left, chart_right = st.columns(2)
 
 with chart_left:
-    st.subheader("Template results")
+    st.subheader("Message status results")
     template_summary = (
         filtered["Template Result"]
         .replace("", "UNKNOWN")
@@ -193,6 +194,5 @@ st.dataframe(
 )
 
 st.caption(
-    f"Skipped records in current filter: {skipped:,}. "
-    "Data refreshes automatically every three minutes."
+    "API Accepted means DoubleTick accepted the request. Sent, Delivered, Read, and Failed are final webhook statuses. Data refreshes every three minutes."
 )
