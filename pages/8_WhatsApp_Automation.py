@@ -92,7 +92,11 @@ tagged = int(filtered["Tag Result"].eq("TAGGED").sum())
 
 metric_columns = st.columns(7)
 metric_columns[0].metric("Report Records", f"{total:,}")
-metric_columns[1].metric("API Accepted", f"{api_accepted:,}")
+metric_columns[1].metric(
+    "API Accepted (Pending)",
+    f"{api_accepted:,}",
+    help="DoubleTick accepted the request, but no final webhook status has been received yet.",
+)
 metric_columns[2].metric("Sent", f"{sent:,}")
 metric_columns[3].metric("Delivered", f"{delivered:,}")
 metric_columns[4].metric("Read", f"{read:,}")
