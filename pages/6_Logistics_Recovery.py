@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
-
 import pandas as pd
 import streamlit as st
 
 from src.logistics import (
     AGENTS,
+    DEFAULT_LOGISTICS_SHEET_ID,
     add_activity,
     close_case,
     load_activity,
@@ -15,15 +14,43 @@ from src.logistics import (
     sync_logistics_cases,
 )
 
-st.set_page_config(page_title="Logistics Recovery", page_icon="🚚", layout="wide")
+st.set_page_config(page_title="Logistics Recovery CRM", page_icon="🚚", layout="wide")
 
-st.title("🚚 Logistics Recovery")
+
+def _error_text(exc: Exception) -> str:
+    message = str(exc).strip()
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+def _service_account_email() -> str:
+    try:
+        return str(dict(st.secrets["google_service_account"]).get("client_email", "")).strip()
+    except Exception:
+        return ""
+
+
+def _logistics_sheet_id() -> str:
+    try:
+        return str(st.secrets.get("logistics", {}).get("sheet_id", DEFAULT_LOGISTICS_SHEET_ID)).strip()
+    except Exception:
+        return DEFAULT_LOGISTICS_SHEET_ID
+
+
+st.title("🚚 Logistics Recovery CRM")
 st.caption(
-    "Independent logistics workspace. This module does not update the existing Tawseel dashboard, "
-    "DELIVERED, OFD, RTO, or other operational tabs."
+    "Agents work directly here like a CRM. Google Sheets is only the hidden storage layer. "
+    "This module does not update the existing Tawseel dashboard, DELIVERED, OFD, RTO, or other operational tabs."
 )
 
 with st.sidebar:
+    st.subheader("CRM workspace")
+    workspace_identity = st.selectbox(
+        "Working as",
+        ["MANAGER", *AGENTS],
+        help="This selects the visible workspace. It is not yet a secure login control.",
+    )
+
+    st.divider()
     st.subheader("Logistics controls")
     if st.button("Sync critical & follow-up orders", type="primary", use_container_width=True):
         with st.spinner("Reading Tawseel data and synchronizing the isolated logistics queue..."):
@@ -36,15 +63,44 @@ with st.sidebar:
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
-                st.error(f"Logistics sync failed: {exc}")
+                st.error(f"Logistics sync failed — {_error_text(exc)}")
 
-    st.info("All agent work is stored only in the separate Logistics Recovery spreadsheet.")
+    st.info("Agents do not need to open or edit the backend spreadsheet.")
 
 try:
     cases = load_cases()
     activity = load_activity()
 except Exception as exc:
-    st.error(f"Unable to load logistics data: {exc}")
+    service_email = _service_account_email()
+    sheet_id = _logistics_sheet_id()
+
+    st.error(f"Unable to load logistics data — {_error_text(exc)}")
+    st.subheader("One-time connection setup")
+    st.write(
+        "The CRM page is live, but the deployed Streamlit service account cannot currently open or edit "
+        "the separate Logistics Recovery spreadsheet."
+    )
+
+    if service_email:
+        st.code(service_email)
+        st.markdown(
+            "Open the **Emarath Logistics Recovery System** Google Sheet and share it with the email above "
+            "as **Editor**. Then return here and refresh the page."
+        )
+    else:
+        st.warning("The deployed app is missing `google_service_account.client_email` in Streamlit secrets.")
+
+    st.markdown(f"**Configured logistics spreadsheet ID:** `{sheet_id}`")
+    st.markdown(
+        f"[Open the Logistics Recovery spreadsheet](https://docs.google.com/spreadsheets/d/{sheet_id}/edit)"
+    )
+
+    with st.expander("Technical diagnostic"):
+        st.code(repr(exc))
+        st.write(
+            "Most common causes: the spreadsheet was not shared with the service account as Editor, "
+            "the spreadsheet ID is incorrect, or Google Sheets/Drive API permissions are unavailable."
+        )
     st.stop()
 
 overall, agent_summary = logistics_summary(cases)
@@ -56,71 +112,82 @@ metrics[2].metric("Closed cases", f"{int(overall['Closed']):,}")
 metrics[3].metric("Recovered deliveries", f"{int(overall['Delivered After Coordination']):,}")
 metrics[4].metric("Recovery rate", f"{float(overall['Recovery Rate']):.1%}")
 
-overview_tab, queue_tab, agent_tab, activity_tab, admin_tab = st.tabs(
-    ["Overview", "Active Queue", "Agent Workspace", "Activity Log", "Admin"]
-)
+if workspace_identity == "MANAGER":
+    overview_tab, queue_tab, agent_tab, activity_tab, admin_tab = st.tabs(
+        ["Overview", "Active Queue", "Agent Workspace", "Activity Log", "Admin"]
+    )
+else:
+    agent_tab, activity_tab = st.tabs(["My Cases", "My Activity"])
+    overview_tab = queue_tab = admin_tab = None
 
-with overview_tab:
-    st.subheader("Agent performance")
-    if agent_summary.empty:
-        st.info("No logistics cases have been assigned yet.")
-    else:
-        st.dataframe(
-            agent_summary.style.format({"Recovery Rate": "{:.1%}"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    if not cases.empty:
-        status_summary = (
-            cases["Logistics Work Status"]
-            .fillna("")
-            .replace("", "UNSPECIFIED")
-            .value_counts()
-            .rename_axis("Logistics Status")
-            .reset_index(name="Cases")
-        )
-        st.subheader("Separate logistics status mix")
-        st.dataframe(status_summary, use_container_width=True, hide_index=True)
-
-with queue_tab:
-    st.subheader("Active logistics queue")
-    if cases.empty:
-        st.info("No cases available. Run a logistics sync.")
-    else:
-        work = cases.copy()
-        work["Logistics Work Status"] = work["Logistics Work Status"].fillna("").astype(str)
-        active = work[~work["Logistics Work Status"].str.upper().eq("CLOSED")].copy()
-
-        f1, f2, f3 = st.columns(3)
-        agent_filter = f1.multiselect("Agent", AGENTS, default=[])
-        priority_options = sorted(v for v in active["Priority"].dropna().astype(str).unique() if v)
-        priority_filter = f2.multiselect("Priority", priority_options, default=[])
-        search_text = f3.text_input("Search AWB, customer, or mobile")
-
-        if agent_filter:
-            active = active[active["Logistics Agent"].astype(str).isin(agent_filter)]
-        if priority_filter:
-            active = active[active["Priority"].astype(str).isin(priority_filter)]
-        if search_text.strip():
-            needle = search_text.strip().casefold()
-            mask = (
-                active["AWB"].astype(str).str.casefold().str.contains(needle, regex=False)
-                | active["Customer Name"].astype(str).str.casefold().str.contains(needle, regex=False)
-                | active["Mobile"].astype(str).str.casefold().str.contains(needle, regex=False)
+if overview_tab is not None:
+    with overview_tab:
+        st.subheader("Agent performance")
+        if agent_summary.empty:
+            st.info("No logistics cases have been assigned yet.")
+        else:
+            st.dataframe(
+                agent_summary.style.format({"Recovery Rate": "{:.1%}"}),
+                use_container_width=True,
+                hide_index=True,
             )
-            active = active[mask]
 
-        display_columns = [
-            "Case ID", "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
-            "Courier Remarks", "Priority", "Logistics Agent", "Assigned At",
-            "Logistics Work Status", "Total Call Attempts", "Last Call Status",
-            "Customer Response", "Next Follow-up", "Agent Remark",
-        ]
-        st.dataframe(active[display_columns], use_container_width=True, hide_index=True, height=560)
+        if not cases.empty:
+            status_summary = (
+                cases["Logistics Work Status"]
+                .fillna("")
+                .replace("", "UNSPECIFIED")
+                .value_counts()
+                .rename_axis("Logistics Status")
+                .reset_index(name="Cases")
+            )
+            st.subheader("Separate logistics status mix")
+            st.dataframe(status_summary, use_container_width=True, hide_index=True)
+
+if queue_tab is not None:
+    with queue_tab:
+        st.subheader("Active logistics queue")
+        if cases.empty:
+            st.info("No cases available. Run a logistics sync.")
+        else:
+            work = cases.copy()
+            work["Logistics Work Status"] = work["Logistics Work Status"].fillna("").astype(str)
+            active = work[~work["Logistics Work Status"].str.upper().eq("CLOSED")].copy()
+
+            f1, f2, f3 = st.columns(3)
+            agent_filter = f1.multiselect("Agent", AGENTS, default=[])
+            priority_options = sorted(v for v in active["Priority"].dropna().astype(str).unique() if v)
+            priority_filter = f2.multiselect("Priority", priority_options, default=[])
+            search_text = f3.text_input("Search AWB, customer, or mobile")
+
+            if agent_filter:
+                active = active[active["Logistics Agent"].astype(str).isin(agent_filter)]
+            if priority_filter:
+                active = active[active["Priority"].astype(str).isin(priority_filter)]
+            if search_text.strip():
+                needle = search_text.strip().casefold()
+                mask = (
+                    active["AWB"].astype(str).str.casefold().str.contains(needle, regex=False)
+                    | active["Customer Name"].astype(str).str.casefold().str.contains(needle, regex=False)
+                    | active["Mobile"].astype(str).str.casefold().str.contains(needle, regex=False)
+                )
+                active = active[mask]
+
+            display_columns = [
+                "Case ID", "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
+                "Courier Remarks", "Priority", "Logistics Agent", "Assigned At",
+                "Logistics Work Status", "Total Call Attempts", "Last Call Status",
+                "Customer Response", "Next Follow-up", "Agent Remark",
+            ]
+            st.dataframe(active[display_columns], use_container_width=True, hide_index=True, height=560)
 
 with agent_tab:
-    selected_agent = st.selectbox("Logistics agent", AGENTS)
+    selected_agent = (
+        st.selectbox("Logistics agent", AGENTS)
+        if workspace_identity == "MANAGER"
+        else workspace_identity
+    )
+    st.subheader(f"{selected_agent.title()} — CRM Workspace")
     assigned = cases[cases["Logistics Agent"].astype(str).str.upper().eq(selected_agent)] if not cases.empty else cases
     active_assigned = assigned[~assigned["Logistics Work Status"].astype(str).str.upper().eq("CLOSED")]
 
@@ -192,10 +259,10 @@ with agent_tab:
                     next_follow_up=next_follow_up,
                     new_status=new_status,
                 )
-                st.success("Activity saved to the separate logistics audit log.")
+                st.success("Activity saved to the CRM audit history.")
                 st.rerun()
             except Exception as exc:
-                st.error(f"Could not save activity: {exc}")
+                st.error(f"Could not save activity — {_error_text(exc)}")
 
         with st.expander("Close this logistics case"):
             with st.form("close_form"):
@@ -217,26 +284,38 @@ with agent_tab:
                         delivered_date=str(delivered_date or ""),
                         remark=close_remark,
                     )
-                    st.success("Case closed inside the logistics module only.")
+                    st.success("Case closed inside the logistics CRM only.")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Could not close case: {exc}")
+                    st.error(f"Could not close case — {_error_text(exc)}")
 
 with activity_tab:
-    st.subheader("Append-only logistics activity history")
-    if activity.empty:
+    heading = "Append-only logistics activity history" if workspace_identity == "MANAGER" else "My activity history"
+    st.subheader(heading)
+    activity_view = activity.copy()
+    if workspace_identity != "MANAGER" and not activity_view.empty:
+        activity_view = activity_view[
+            activity_view["Logistics Agent"].astype(str).str.upper().eq(workspace_identity)
+        ]
+    if activity_view.empty:
         st.info("No activities recorded yet.")
     else:
-        activity_view = activity.sort_values("Action At", ascending=False)
+        activity_view = activity_view.sort_values("Action At", ascending=False)
         st.dataframe(activity_view, use_container_width=True, hide_index=True, height=650)
 
-with admin_tab:
-    st.subheader("Isolation and control")
-    st.success("This module uses a separate spreadsheet and separate logistics statuses.")
-    st.markdown(
-        "- Existing Tawseel dashboard metrics are not modified.\n"
-        "- Existing DELIVERED, OFD, RTO, and other operational tabs are not written to.\n"
-        "- Agent activity history remains in LOGISTICS_ACTIVITY_LOG.\n"
-        "- Courier status is read as source information; logistics status is maintained separately."
-    )
-    st.write("**Configured logistics agents:**", ", ".join(AGENTS))
+if admin_tab is not None:
+    with admin_tab:
+        st.subheader("Isolation and control")
+        st.success("This CRM uses a separate spreadsheet and separate logistics statuses.")
+        st.markdown(
+            "- Agents work entirely inside this CRM page; the spreadsheet is only backend storage.\n"
+            "- Existing Tawseel dashboard metrics are not modified.\n"
+            "- Existing DELIVERED, OFD, RTO, and other operational tabs are not written to.\n"
+            "- Agent activity history remains append-only in LOGISTICS_ACTIVITY_LOG.\n"
+            "- Courier status is read as source information; logistics status is maintained separately."
+        )
+        st.write("**Configured logistics agents:**", ", ".join(AGENTS))
+        st.warning(
+            "The current workspace selector is not authentication. Secure individual logins/PINs should be added "
+            "before giving agents separate public access."
+        )
