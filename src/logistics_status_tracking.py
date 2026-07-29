@@ -10,6 +10,7 @@ import streamlit as st
 from gspread.utils import rowcol_to_a1
 
 from src.logistics import load_cases, logistics_book, sync_logistics_cases
+from src.logistics_assignment import apply_weighted_assignment_policy
 from src.logistics_contact_sync import refresh_logistics_contacts_from_sources
 from src.logistics_critical_reactivation import reactivate_newly_critical_cases
 
@@ -118,14 +119,14 @@ def _write_status_updates(statuses: pd.DataFrame) -> None:
     _clear_status_cache()
 
 
-def sync_logistics_cases_with_status_tracking() -> dict[str, int]:
-    """Run the isolated logistics sync and persist detected Tawseel status changes.
+def sync_logistics_cases_with_status_tracking() -> dict[str, Any]:
+    """Run isolated sync, contact correction, reactivation and weighted assignment.
 
-    New critical/follow-up orders are assigned automatically. Existing assigned
+    New critical/follow-up orders are added automatically. Existing assigned
     cases are refreshed even after their Tawseel status leaves the critical set.
     Closed cases that become critical again are reopened for the same agent.
-    Customer name and mobile are refreshed from each portal's Tawseel_AWB tab
-    using an exact Portal+AWB match.
+    Customer name and mobile are refreshed from each portal's Tawseel_AWB tab.
+    Untouched active cases follow the requested 15/15/35/35 assignment policy.
     """
     before = load_cases()
     before_status = {
@@ -134,10 +135,11 @@ def sync_logistics_cases_with_status_tracking() -> dict[str, int]:
         if _text(row.get("Case ID"))
     }
 
-    result = sync_logistics_cases()
+    result: dict[str, Any] = sync_logistics_cases()
     result.update(refresh_logistics_contacts_from_sources())
     reactivation = reactivate_newly_critical_cases()
     result.update(reactivation)
+    result.update(apply_weighted_assignment_policy())
 
     after = load_cases()
     tracked = load_status_updates()
