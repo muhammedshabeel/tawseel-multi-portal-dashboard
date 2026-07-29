@@ -9,6 +9,7 @@ import pandas as pd
 from src.logistics import AGENTS, logistics_book
 
 DATE_BASIS_COLUMNS = {
+    "Tawseel Status Update Date": "Tawseel Status Updated At",
     "Assigned Date": "Assigned At",
     "Scheduled Date": "Scheduled Date",
     "Next Follow-up Date": "Next Follow-up",
@@ -70,7 +71,7 @@ def filter_cases_by_date(
     if cases.empty or start_date is None or end_date is None:
         return cases.copy()
 
-    column = DATE_BASIS_COLUMNS.get(basis, "Assigned At")
+    column = DATE_BASIS_COLUMNS.get(basis, "Tawseel Status Updated At")
     if column not in cases.columns:
         return cases.iloc[0:0].copy()
 
@@ -177,6 +178,7 @@ def daily_case_details(
         "Customer Name",
         "Mobile",
         "Latest Courier Status",
+        "Tawseel Status Updated At",
         "Logistics Work Status",
         "Logistics Final Outcome",
         "Delivered After Coordination",
