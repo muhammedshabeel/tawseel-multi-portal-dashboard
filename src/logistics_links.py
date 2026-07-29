@@ -67,6 +67,18 @@ def threecx_webclient_url() -> str:
     return DEFAULT_3CX_WEBCLIENT_URL
 
 
+def threecx_call_link(phone: object) -> str:
+    """Open the configured 3CX Web Client without invoking OS call handlers.
+
+    The customer phone is retained in the CRM display for copying or use by the
+    3CX Click2Call extension. This avoids macOS routing callto/tel links to Zoom
+    or the Phone app.
+    """
+    if not normalize_phone(phone):
+        return "#"
+    return threecx_webclient_url()
+
+
 def doubletick_chat_link(phone: object) -> str:
     """Open the exact DoubleTick conversation without requiring an API key."""
     normalized = normalize_phone(phone)
