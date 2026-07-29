@@ -101,20 +101,44 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[required]
 
 
+def _clean_text_series(series: pd.Series) -> pd.Series:
+    return series.map(lambda value: "" if pd.isna(value) else str(value).strip())
+
+
 @st.cache_data(ttl=180, show_spinner=False)
 def load_portal_master(config: PortalConfig) -> pd.DataFrame:
     client = get_gspread_client()
     worksheet = client.open_by_key(config.sheet_id).worksheet(config.master_tab)
-    records = worksheet.get_all_records(default_blank="")
+    records = worksheet.get_all_records(default_blank="", numericise_ignore=["all"])
     df = _normalize_columns(pd.DataFrame(records))
 
     df.insert(0, "Portal", config.name)
-    df["AWB"] = df["AWB"].astype(str).str.strip()
-    df["Agent"] = df["Agent"].replace("", "Unassigned").fillna("Unassigned")
-    df["Status"] = df["Status"].fillna("").astype(str).str.strip()
-    df["Remarks"] = df["Remarks"].fillna("").astype(str).str.strip()
-    df["Priority"] = df["Priority"].fillna("").astype(str).str.strip()
-    df["Scheduled Date"] = pd.to_datetime(df["Scheduled Date"], errors="coerce", dayfirst=True)
+
+    # Keep identifiers and display fields consistently textual. This prevents
+    # mixed int/string phone values from failing Streamlit Arrow serialization.
+    for column in [
+        "Portal",
+        "AWB",
+        "Customer Name",
+        "Mobile",
+        "Status",
+        "Remarks",
+        "PDF",
+        "Agent",
+        "Priority",
+    ]:
+        df[column] = _clean_text_series(df[column])
+
+    df["Agent"] = df["Agent"].replace("", "Unassigned")
+
+    # Parse only non-empty values and keep malformed values as NaT.
+    raw_dates = _clean_text_series(df["Scheduled Date"])
+    df["Scheduled Date"] = pd.to_datetime(
+        raw_dates.where(raw_dates.ne("")),
+        errors="coerce",
+        dayfirst=True,
+        format="mixed",
+    )
 
     return df
 
@@ -163,4 +187,9 @@ def load_all_data() -> tuple[pd.DataFrame, pd.DataFrame]:
             )
 
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not combined.empty:
+        for column in ["Portal", "AWB", "Customer Name", "Mobile", "Status", "Remarks", "PDF", "Agent", "Priority"]:
+            if column in combined.columns:
+                combined[column] = _clean_text_series(combined[column])
+
     return combined, pd.DataFrame(health_rows)
