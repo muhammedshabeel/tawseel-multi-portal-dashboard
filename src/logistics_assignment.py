@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 from typing import Any
 
 import pandas as pd
@@ -72,11 +73,7 @@ def weighted_assignments(
     count: int,
     current_counts: dict[str, int] | None = None,
 ) -> list[str]:
-    """Assign new cases to the largest deficit against the 15/15/35/35 target.
-
-    The method uses current active workload, so small and large batches both move
-    the total distribution toward the requested ratio without bursty fixed blocks.
-    """
+    """Assign new cases to the largest deficit against the 15/15/35/35 target."""
     counts = {
         agent: int((current_counts or {}).get(agent, 0))
         for agent in ASSIGNMENT_WEIGHTS
@@ -119,12 +116,7 @@ def plan_safe_rebalance(
     cases: pd.DataFrame,
     activity: pd.DataFrame,
 ) -> tuple[dict[int, str], dict[str, Any]]:
-    """Plan a one-time rebalance without moving worked or completed cases.
-
-    Reassignable cases must be active, have no calls, no activity history, no
-    recovery outcome, and remain in NEW/blank work status. This protects agent
-    ownership and audit history for every case that has already been handled.
-    """
+    """Plan a rebalance without moving worked, delivered, or completed cases."""
     if cases.empty:
         return {}, {
             "eligible": 0,
@@ -184,19 +176,19 @@ def plan_safe_rebalance(
         for agent in ASSIGNMENT_WEIGHTS
     }
 
-    # If locked work already exceeds one or more targets, allocate the remaining
-    # movable cases by weighted deficit so all rows still receive one owner.
     movable_total = len(reassignable_indexes)
     desired_total = sum(needed.values())
     if desired_total < movable_total:
-        extra = weighted_assignments(movable_total - desired_total, {
-            agent: locked_counts.get(agent, 0) + needed.get(agent, 0)
-            for agent in ASSIGNMENT_WEIGHTS
-        })
+        extra = weighted_assignments(
+            movable_total - desired_total,
+            {
+                agent: locked_counts.get(agent, 0) + needed.get(agent, 0)
+                for agent in ASSIGNMENT_WEIGHTS
+            },
+        )
         for agent in extra:
             needed[agent] += 1
     elif desired_total > movable_total:
-        # Reduce excess slots from the smallest current deficits first.
         while sum(needed.values()) > movable_total:
             candidates = [agent for agent in ASSIGNMENT_ORDER if needed[agent] > 0]
             if not candidates:
@@ -241,3 +233,96 @@ def plan_safe_rebalance(
         "after": assignment_counts(projected),
         "target": targets,
     }
+
+
+def apply_weighted_assignment_policy() -> dict[str, Any]:
+    """Apply the requested 30/70 policy to current safe cases and future batches.
+
+    Vaishakh and Neethu receive 15% each. Hasbir and Akash receive 35% each.
+    Existing cases with any agent work or audit activity stay with their current
+    owner. Untouched active cases are redistributed, and every change is logged.
+    """
+    from src.logistics import (
+        ACTIVITY_HEADERS,
+        CASE_HEADERS,
+        _WRITE_LOCK,
+        _batch_update_rows,
+        _clear_table_cache,
+        _now,
+        _row_values,
+        _worksheet,
+        load_activity,
+        load_cases,
+    )
+
+    with _WRITE_LOCK:
+        cases = load_cases()
+        activity = load_activity()
+        plan, summary = plan_safe_rebalance(cases, activity)
+        if not plan:
+            return {
+                "assignment_policy": ASSIGNMENT_METHOD,
+                "assignment_rebalanced": 0,
+                "assignment_eligible": summary["eligible"],
+                "assignment_locked": summary["locked"],
+                "assignment_before": summary["before"],
+                "assignment_after": summary["after"],
+                "assignment_target": summary["target"],
+            }
+
+        now = _now()
+        case_updates: list[tuple[int, list[str]]] = []
+        activity_rows: list[list[str]] = []
+
+        for frame_index, new_agent in plan.items():
+            current = cases.loc[frame_index].to_dict()
+            previous_agent = _text(current.get("Logistics Agent")).upper()
+            current["Logistics Agent"] = new_agent
+            current["Assignment Method"] = ASSIGNMENT_METHOD
+            current["Updated At"] = now
+            case_updates.append(
+                (int(frame_index) + 2, _row_values(current, CASE_HEADERS))
+            )
+
+            remark = (
+                f"Weighted assignment policy {ASSIGNMENT_POLICY_VERSION}: "
+                f"{previous_agent or 'UNASSIGNED'} -> {new_agent}"
+            )
+            activity_id = hashlib.sha256(
+                f"{current.get('Case ID')}|{now}|REASSIGN|{new_agent}".encode("utf-8")
+            ).hexdigest()[:20].upper()
+            activity_record = {
+                "Activity ID": activity_id,
+                "Case ID": current.get("Case ID", ""),
+                "Portal": current.get("Portal", ""),
+                "AWB": current.get("AWB", ""),
+                "Logistics Agent": new_agent,
+                "Action At": now,
+                "Action Type": "REASSIGN",
+                "Remark": remark,
+                "Previous Work Status": current.get("Logistics Work Status", ""),
+                "New Work Status": current.get("Logistics Work Status", ""),
+            }
+            activity_rows.append(_row_values(activity_record, ACTIVITY_HEADERS))
+
+        _batch_update_rows(
+            _worksheet("LOGISTICS_CASES"),
+            case_updates,
+            len(CASE_HEADERS),
+        )
+        if activity_rows:
+            _worksheet("LOGISTICS_ACTIVITY_LOG").append_rows(
+                activity_rows,
+                value_input_option="USER_ENTERED",
+            )
+        _clear_table_cache()
+
+        return {
+            "assignment_policy": ASSIGNMENT_METHOD,
+            "assignment_rebalanced": len(plan),
+            "assignment_eligible": summary["eligible"],
+            "assignment_locked": summary["locked"],
+            "assignment_before": summary["before"],
+            "assignment_after": summary["after"],
+            "assignment_target": summary["target"],
+        }
