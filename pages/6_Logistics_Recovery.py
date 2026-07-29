@@ -13,12 +13,8 @@ from src.logistics import (
     logistics_summary,
     sync_logistics_cases,
 )
-from src.logistics_integrations import (
-    enrich_case_contacts,
-    get_doubletick_embed_url,
-    normalize_phone,
-    phone_display,
-)
+from src.logistics_integrations import enrich_case_contacts, normalize_phone, phone_display
+from src.logistics_links import doubletick_chat_link, threecx_call_link
 
 st.set_page_config(page_title="Logistics Recovery", page_icon="🚚", layout="wide")
 
@@ -30,21 +26,22 @@ def _error_text(exc: Exception) -> str:
 
 def _sheet_id() -> str:
     try:
-        return str(st.secrets.get("logistics", {}).get("sheet_id", DEFAULT_LOGISTICS_SHEET_ID)).strip()
+        return str(
+            st.secrets.get("logistics", {}).get(
+                "sheet_id", DEFAULT_LOGISTICS_SHEET_ID
+            )
+        ).strip()
     except Exception:
         return DEFAULT_LOGISTICS_SHEET_ID
 
 
 def _service_email() -> str:
     try:
-        return str(dict(st.secrets["google_service_account"]).get("client_email", "")).strip()
+        return str(
+            dict(st.secrets["google_service_account"]).get("client_email", "")
+        ).strip()
     except Exception:
         return ""
-
-
-def _call_link(value: object) -> str:
-    digits = normalize_phone(value)
-    return f"tel:+{digits}" if digits else "#"
 
 
 def _safe_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -53,9 +50,13 @@ def _safe_frame(df: pd.DataFrame) -> pd.DataFrame:
     safe = df.copy()
     for column in safe.columns:
         if pd.api.types.is_datetime64_any_dtype(safe[column]):
-            safe[column] = safe[column].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+            safe[column] = (
+                safe[column].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+            )
         elif safe[column].dtype == "object":
-            safe[column] = safe[column].map(lambda value: "" if pd.isna(value) else str(value))
+            safe[column] = safe[column].map(
+                lambda value: "" if pd.isna(value) else str(value)
+            )
     return safe
 
 
@@ -82,9 +83,8 @@ if sync_clicked:
 
 with st.spinner("Loading logistics workspace..."):
     try:
-        cases = load_cases()
+        cases = enrich_case_contacts(load_cases())
         activity = load_activity()
-        cases = enrich_case_contacts(cases)
     except Exception as exc:
         st.error(f"Unable to open logistics workspace — {_error_text(exc)}")
         email = _service_email()
@@ -125,7 +125,9 @@ if overview_tab is not None:
             st.info("No cases have been assigned yet.")
         else:
             summary = _safe_frame(agent_summary)
-            summary["Recovery Rate"] = pd.to_numeric(summary["Recovery Rate"], errors="coerce").fillna(0)
+            summary["Recovery Rate"] = pd.to_numeric(
+                summary["Recovery Rate"], errors="coerce"
+            ).fillna(0)
             st.dataframe(
                 summary,
                 use_container_width=True,
@@ -146,7 +148,9 @@ if overview_tab is not None:
                 .reset_index(name="Cases")
             )
             st.subheader("Status Summary")
-            st.dataframe(_safe_frame(status_summary), use_container_width=True, hide_index=True)
+            st.dataframe(
+                _safe_frame(status_summary), use_container_width=True, hide_index=True
+            )
 
 if queue_tab is not None:
     with queue_tab:
@@ -154,7 +158,9 @@ if queue_tab is not None:
         if cases.empty:
             st.info("No logistics cases available. Click Sync Orders.")
         else:
-            active = cases[~cases["Logistics Work Status"].str.upper().eq("CLOSED")].copy()
+            active = cases[
+                ~cases["Logistics Work Status"].str.upper().eq("CLOSED")
+            ].copy()
             f1, f2, f3 = st.columns(3)
             selected_agents = f1.multiselect("Agent", AGENTS)
             priorities = sorted(v for v in active["Priority"].unique() if v)
@@ -169,8 +175,12 @@ if queue_tab is not None:
                 needle = query.strip().casefold()
                 active = active[
                     active["AWB"].str.casefold().str.contains(needle, regex=False)
-                    | active["Customer Name"].str.casefold().str.contains(needle, regex=False)
-                    | active["Mobile"].str.casefold().str.contains(needle, regex=False)
+                    | active["Customer Name"]
+                    .str.casefold()
+                    .str.contains(needle, regex=False)
+                    | active["Mobile"]
+                    .str.casefold()
+                    .str.contains(needle, regex=False)
                 ]
 
             columns = [
@@ -201,8 +211,14 @@ if queue_tab is not None:
 
 with workspace_tab:
     agent = st.selectbox("Agent", AGENTS) if identity == "MANAGER" else identity
-    assigned = cases[cases["Logistics Agent"].str.upper().eq(agent)] if not cases.empty else cases
-    active_cases = assigned[~assigned["Logistics Work Status"].str.upper().eq("CLOSED")]
+    assigned = (
+        cases[cases["Logistics Agent"].str.upper().eq(agent)]
+        if not cases.empty
+        else cases
+    )
+    active_cases = assigned[
+        ~assigned["Logistics Work Status"].str.upper().eq("CLOSED")
+    ]
 
     st.subheader(f"{agent.title()} Workspace")
     a1, a2, a3, a4 = st.columns(4)
@@ -221,7 +237,9 @@ with workspace_tab:
     )
     a4.metric(
         "Recovered",
-        int(assigned["Delivered After Coordination"].str.upper().eq("YES").sum())
+        int(
+            assigned["Delivered After Coordination"].str.upper().eq("YES").sum()
+        )
         if not assigned.empty
         else 0,
     )
@@ -230,7 +248,9 @@ with workspace_tab:
         st.info("No active cases assigned.")
     else:
         options = {
-            f"{row['AWB']} — {row['Customer Name']} — {row['Latest Courier Status']}": row["Case ID"]
+            f"{row['AWB']} — {row['Customer Name']} — {row['Latest Courier Status']}": row[
+                "Case ID"
+            ]
             for _, row in active_cases.iterrows()
         }
         selected_label = st.selectbox("Select Order", list(options))
@@ -251,7 +271,7 @@ with workspace_tab:
             if valid_phone:
                 st.link_button(
                     "📞 Call via 3CX",
-                    _call_link(valid_phone),
+                    threecx_call_link(valid_phone),
                     use_container_width=True,
                 )
             else:
@@ -263,25 +283,18 @@ with workspace_tab:
                 )
 
         with b2:
-            doubletick_state_key = f"doubletick_url_{case_id}"
-            if st.button(
-                "💬 Open in DoubleTick",
-                use_container_width=True,
-                disabled=not bool(valid_phone),
-                help=None if valid_phone else "No valid customer mobile number was found for this order.",
-            ):
-                try:
-                    with st.spinner("Opening DoubleTick conversation..."):
-                        st.session_state[doubletick_state_key] = get_doubletick_embed_url(valid_phone)
-                except Exception as exc:
-                    st.error(f"Could not open DoubleTick — {_error_text(exc)}")
-
-            doubletick_url = st.session_state.get(doubletick_state_key, "")
-            if doubletick_url:
+            if valid_phone:
                 st.link_button(
-                    "Continue to DoubleTick Chat",
-                    doubletick_url,
+                    "💬 Open in DoubleTick",
+                    doubletick_chat_link(valid_phone),
                     use_container_width=True,
+                )
+            else:
+                st.button(
+                    "💬 Open in DoubleTick",
+                    disabled=True,
+                    use_container_width=True,
+                    help="No valid customer mobile number was found for this order.",
                 )
 
         if not valid_phone:
