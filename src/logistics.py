@@ -97,7 +97,10 @@ def _frame_from_values(values: list[list[Any]], headers: list[str]) -> pd.DataFr
 
     for row in rows:
         padded = list(row) + [""] * max(0, len(source_headers) - len(row))
-        record = {source_headers[index]: _text(padded[index]) for index in range(len(source_headers))}
+        record = {
+            source_headers[index]: _text(padded[index])
+            for index in range(len(source_headers))
+        }
         if any(record.values()):
             normalized_rows.append(record)
 
@@ -164,15 +167,20 @@ def make_case_id(portal: str, awb: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20].upper()
 
 
-def _eligible_source() -> pd.DataFrame:
+def _operational_sources() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return all Tawseel orders plus the subset eligible for new assignment.
+
+    All source orders are used to refresh cases already present in Logistics.
+    Only critical/follow-up orders can create new Logistics cases.
+    """
     source, _ = load_all_data()
     if source.empty:
-        return source
+        return source.copy(), source.copy()
+
     work = add_derived_columns(source)
-    return work[
-        (work["Is Critical"] | work["Is Follow Up"])
-        & work["AWB"].astype(str).str.strip().ne("")
-    ].copy()
+    work = work[work["AWB"].astype(str).str.strip().ne("")].copy()
+    eligible = work[work["Is Critical"] | work["Is Follow Up"]].copy()
+    return work, eligible
 
 
 def _load_settings() -> tuple[dict[str, str], dict[str, int]]:
@@ -229,38 +237,88 @@ def _batch_update_rows(
         worksheet.batch_update(payload, raw=False)
 
 
+def _source_map(source: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    """Build a stable Portal+AWB lookup, keeping the latest source occurrence."""
+    lookup: dict[str, dict[str, Any]] = {}
+    if source.empty:
+        return lookup
+
+    for _, row in source.iterrows():
+        portal = _text(row.get("Portal", ""))
+        awb = _text(row.get("AWB", ""))
+        if not portal or not awb:
+            continue
+        lookup[make_case_id(portal, awb)] = row.to_dict()
+    return lookup
+
+
 def sync_logistics_cases() -> dict[str, int]:
-    """Read operational data and write only to the isolated logistics workbook."""
+    """Refresh all assigned cases and add only new eligible cases.
+
+    This is a one-way read from Tawseel/operational sheets into the isolated
+    Logistics workbook. Existing Logistics assignments, activity, remarks,
+    outcomes and recovery data are never overwritten.
+    """
     with _WRITE_LOCK:
         ensure_logistics_structure()
-        source = _eligible_source()
+        all_source, eligible_source = _operational_sources()
+        all_source_by_case = _source_map(all_source)
+        eligible_by_case = _source_map(eligible_source)
         cases = load_cases()
         now = _now()
 
         existing = {
             _text(case_id): index
-            for index, case_id in enumerate(cases.get("Case ID", pd.Series(dtype=str)).tolist())
+            for index, case_id in enumerate(
+                cases.get("Case ID", pd.Series(dtype=str)).tolist()
+            )
             if _text(case_id)
         }
 
-        new_source_rows: list[dict[str, Any]] = []
         updated_rows: list[tuple[int, list[str]]] = []
+        matched_existing = 0
+        status_changes = 0
 
-        for _, source_row in source.iterrows():
-            portal = _text(source_row.get("Portal", ""))
-            awb = _text(source_row.get("AWB", ""))
-            case_id = make_case_id(portal, awb)
-
-            if case_id not in existing:
-                new_source_rows.append(source_row.to_dict() | {"_case_id": case_id})
+        # Refresh every case already assigned to Logistics, even when its new
+        # Tawseel status is Delivered/OFD/Sorting and it is no longer critical.
+        for case_id, frame_index in existing.items():
+            source_row = all_source_by_case.get(case_id)
+            if source_row is None:
                 continue
 
-            frame_index = existing[case_id]
+            matched_existing += 1
             current = cases.iloc[frame_index].to_dict()
-            current["Latest Courier Status"] = _text(source_row.get("Status", ""))
-            current["Courier Remarks"] = _text(source_row.get("Remarks", ""))
-            current["Updated At"] = now
-            updated_rows.append((frame_index + 2, _row_values(current, CASE_HEADERS)))
+            latest_status = _text(source_row.get("Status", ""))
+            latest_remarks = _text(source_row.get("Remarks", ""))
+            latest_scheduled = _text(source_row.get("Scheduled Date", ""))
+            latest_original_agent = _text(source_row.get("Agent", ""))
+
+            changed = False
+            if latest_status and latest_status != _text(current.get("Latest Courier Status")):
+                current["Latest Courier Status"] = latest_status
+                status_changes += 1
+                changed = True
+            if latest_remarks != _text(current.get("Courier Remarks")):
+                current["Courier Remarks"] = latest_remarks
+                changed = True
+            if latest_scheduled and latest_scheduled != _text(current.get("Scheduled Date")):
+                current["Scheduled Date"] = latest_scheduled
+                changed = True
+            if latest_original_agent and latest_original_agent != _text(current.get("Original Agent")):
+                current["Original Agent"] = latest_original_agent
+                changed = True
+
+            if changed:
+                current["Updated At"] = now
+                updated_rows.append(
+                    (frame_index + 2, _row_values(current, CASE_HEADERS))
+                )
+
+        # Only currently critical/follow-up source rows create new assignments.
+        new_source_rows: list[dict[str, Any]] = []
+        for case_id, source_row in eligible_by_case.items():
+            if case_id not in existing:
+                new_source_rows.append(source_row | {"_case_id": case_id})
 
         assignees: list[str] = []
         next_index = 0
@@ -271,7 +329,11 @@ def sync_logistics_cases() -> dict[str, int]:
         append_rows: list[list[str]] = []
         for source_row, assignee in zip(new_source_rows, assignees):
             priority = _text(source_row.get("Priority", "")) or "FOLLOW-UP"
-            issue = "Critical Delivery Issue" if "CRITICAL" in priority.upper() else "Follow-up Required"
+            issue = (
+                "Critical Delivery Issue"
+                if "CRITICAL" in priority.upper()
+                else "Follow-up Required"
+            )
             record = {
                 "Case ID": source_row["_case_id"],
                 "Portal": source_row.get("Portal", ""),
@@ -307,9 +369,12 @@ def sync_logistics_cases() -> dict[str, int]:
         _batch_update_rows(case_sheet, updated_rows, len(CASE_HEADERS))
         _clear_table_cache()
         return {
-            "eligible": len(source),
+            "source_total": len(all_source_by_case),
+            "eligible": len(eligible_by_case),
+            "matched_existing": matched_existing,
             "created": len(append_rows),
             "updated": len(updated_rows),
+            "status_changed": status_changes,
         }
 
 
@@ -338,7 +403,9 @@ def add_activity(
         current = match.iloc[0].to_dict()
         now = _now()
         case_activity = activity[activity["Case ID"].astype(str).eq(case_id)]
-        attempts_series = pd.to_numeric(case_activity["Call Attempt Number"], errors="coerce")
+        attempts_series = pd.to_numeric(
+            case_activity["Call Attempt Number"], errors="coerce"
+        )
         attempts = int(attempts_series.max()) if attempts_series.notna().any() else 0
         is_call = action_type.upper() == "CALL"
         attempt_number: str | int = attempts + 1 if is_call else ""
@@ -412,7 +479,9 @@ def close_case(
 
         current["Logistics Work Status"] = "CLOSED"
         current["Logistics Final Outcome"] = outcome
-        current["Delivered After Coordination"] = "YES" if delivered_after_coordination else "NO"
+        current["Delivered After Coordination"] = (
+            "YES" if delivered_after_coordination else "NO"
+        )
         current["Logistics Delivered Date"] = delivered_date
         current["Closed At"] = now
         if remark:
@@ -447,7 +516,9 @@ def close_case(
         _clear_table_cache()
 
 
-def logistics_summary(cases: pd.DataFrame) -> tuple[dict[str, int | float], pd.DataFrame]:
+def logistics_summary(
+    cases: pd.DataFrame,
+) -> tuple[dict[str, int | float], pd.DataFrame]:
     if cases.empty:
         return {
             "Assigned": 0,
@@ -469,8 +540,12 @@ def logistics_summary(cases: pd.DataFrame) -> tuple[dict[str, int | float], pd.D
 
     rows: list[dict[str, Any]] = []
     for agent, group in cases.groupby("Logistics Agent", dropna=False):
-        agent_closed = group["Logistics Work Status"].astype(str).str.upper().eq("CLOSED")
-        agent_delivered = group["Delivered After Coordination"].astype(str).str.upper().eq("YES")
+        agent_closed = (
+            group["Logistics Work Status"].astype(str).str.upper().eq("CLOSED")
+        )
+        agent_delivered = (
+            group["Delivered After Coordination"].astype(str).str.upper().eq("YES")
+        )
         rows.append(
             {
                 "Agent": agent or "Unassigned",
@@ -478,11 +553,15 @@ def logistics_summary(cases: pd.DataFrame) -> tuple[dict[str, int | float], pd.D
                 "Active": int((~agent_closed).sum()),
                 "Closed": int(agent_closed.sum()),
                 "Delivered After Coordination": int(agent_delivered.sum()),
-                "Recovery Rate": float(agent_delivered.sum() / len(group)) if len(group) else 0.0,
+                "Recovery Rate": (
+                    float(agent_delivered.sum() / len(group)) if len(group) else 0.0
+                ),
             }
         )
 
     summary = pd.DataFrame(rows)
     if not summary.empty:
-        summary = summary.sort_values(["Recovery Rate", "Assigned"], ascending=[False, False])
+        summary = summary.sort_values(
+            ["Recovery Rate", "Assigned"], ascending=[False, False]
+        )
     return overall, summary
