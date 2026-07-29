@@ -15,19 +15,17 @@ from src.data_loader import get_gspread_client, get_portal_configs
 DEFAULT_COUNTRY_CODE = "971"
 DOUBLE_TICK_EMBED_ENDPOINT = "https://public.doubletick.io/embed/url"
 
-# Read-only fallbacks used only by the Logistics Recovery module. They can be
-# replaced or extended through Streamlit secrets without changing code.
-DEFAULT_AWB_CONTACT_SOURCES = [
-    {
-        "portal": "Oud Al Salam",
-        "sheet_id": "1j6BeDMpjMzvHSKwg-tnXx1nyv-whyNsRphput-vznYo",
-        "sheet_name": "Sheet2",
-        "header_row": 3,
-        "awb_column": "AWB NUMBER",
-        "name_column": "CUSTOMER NAME",
-        "phone_column": "MOBILE NO",
-    }
-]
+# Dedicated read-only contact directory for the isolated Logistics Recovery CRM.
+# The deployed Streamlit service account has Viewer access to this spreadsheet.
+DEFAULT_CONTACT_DIRECTORY = {
+    "sheet_id": "1hcHAAyj7TEP3Hmx5yiWXMEkLAnvNK435n59cGxNXWbc",
+    "sheet_name": "Emarath Logistics Contact Directory",
+    "header_row": 1,
+    "portal_column": "Portal",
+    "awb_column": "AWB",
+    "name_column": "Customer Name",
+    "phone_column": "Mobile",
+}
 
 DEFAULT_CUSTOMER_DIRECTORY = {
     "sheet_id": "1-_ANHqeytND5jgCPmQVn-bERtpJQU437ntUpMNnM3jw",
@@ -59,11 +57,6 @@ def _looks_like_reference(value: Any) -> bool:
 
 
 def normalize_phone(value: Any, default_country_code: str = DEFAULT_COUNTRY_CODE) -> str:
-    """Return an international phone number containing digits only.
-
-    Names or mixed alphanumeric values are rejected instead of extracting their
-    trailing digits. UAE local numbers are normalized to country code 971.
-    """
     raw = _text(value)
     if not raw or re.search(r"[A-Za-z]", raw):
         return ""
@@ -77,9 +70,7 @@ def normalize_phone(value: Any, default_country_code: str = DEFAULT_COUNTRY_CODE
     elif len(digits) == 9 and digits.startswith("5"):
         digits = f"{default_country_code}{digits}"
 
-    if not 10 <= len(digits) <= 15:
-        return ""
-    if digits.startswith("0"):
+    if not 10 <= len(digits) <= 15 or digits.startswith("0"):
         return ""
     return digits
 
@@ -89,99 +80,98 @@ def phone_display(value: Any) -> str:
     return f"+{phone}" if phone else "Unavailable"
 
 
-def _header_index(headers: list[str], explicit: str | None, aliases: set[str]) -> int | None:
-    if explicit:
-        explicit_key = _key(explicit)
-        for index, header in enumerate(headers):
-            if _key(header) == explicit_key:
-                return index
+def _header_index(headers: list[str], name: str, aliases: set[str]) -> int | None:
+    wanted = _key(name)
+    for index, header in enumerate(headers):
+        if _key(header) == wanted:
+            return index
     for index, header in enumerate(headers):
         if _key(header) in aliases:
             return index
     return None
 
 
-def _safe_cell(row: list[Any], index: int | None) -> str:
-    if index is None or index < 0 or index >= len(row):
+def _cell(row: list[Any], index: int | None) -> str:
+    if index is None or index >= len(row):
         return ""
     return _text(row[index])
 
 
-def _source_rows() -> list[dict[str, Any]]:
-    sources = [dict(item) for item in DEFAULT_AWB_CONTACT_SOURCES]
-
-    configured: Any = []
+def _contact_config() -> dict[str, Any]:
+    config = dict(DEFAULT_CONTACT_DIRECTORY)
     try:
-        configured = st.secrets.get("logistics_contact_sources", [])
+        logistics = dict(st.secrets.get("logistics", {}))
     except Exception:
-        configured = []
+        logistics = {}
 
-    if isinstance(configured, dict):
-        configured = [configured]
-    for item in configured or []:
-        try:
-            sources.append(dict(item))
-        except Exception:
-            continue
-    return sources
+    mapping = {
+        "contact_directory_sheet_id": "sheet_id",
+        "contact_directory_sheet_name": "sheet_name",
+        "contact_directory_header_row": "header_row",
+        "contact_directory_portal_column": "portal_column",
+        "contact_directory_awb_column": "awb_column",
+        "contact_directory_name_column": "name_column",
+        "contact_directory_phone_column": "phone_column",
+    }
+    for secret_key, config_key in mapping.items():
+        value = logistics.get(secret_key)
+        if value not in (None, ""):
+            config[config_key] = value
+    return config
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_explicit_awb_contacts() -> dict[tuple[str, str], dict[str, str]]:
+def _load_awb_contacts() -> dict[tuple[str, str], dict[str, str]]:
+    config = _contact_config()
     client = get_gspread_client()
-    result: dict[tuple[str, str], dict[str, str]] = {}
+    values = (
+        client.open_by_key(_text(config["sheet_id"]))
+        .worksheet(_text(config["sheet_name"]))
+        .get_all_values()
+    )
 
-    for source in _source_rows():
-        portal = _text(source.get("portal"))
-        sheet_id = _text(source.get("sheet_id"))
-        sheet_name = _text(source.get("sheet_name"))
-        if not portal or not sheet_id or not sheet_name:
+    header_row = max(int(config.get("header_row", 1)), 1)
+    if len(values) < header_row:
+        return {}
+
+    headers = [_text(value) for value in values[header_row - 1]]
+    portal_index = _header_index(headers, _text(config["portal_column"]), {"portal"})
+    awb_index = _header_index(
+        headers,
+        _text(config["awb_column"]),
+        {"awb", "awbnumber", "trackingnumber", "trackingnum", "waybill"},
+    )
+    name_index = _header_index(
+        headers,
+        _text(config["name_column"]),
+        {"customername", "consigneename", "recipientname", "name"},
+    )
+    phone_index = _header_index(
+        headers,
+        _text(config["phone_column"]),
+        {"mobile", "mobileno", "mobilenumber", "phone", "phonenumber", "number1"},
+    )
+    if portal_index is None or awb_index is None:
+        return {}
+
+    contacts: dict[tuple[str, str], dict[str, str]] = {}
+    for row in values[header_row:]:
+        portal = _cell(row, portal_index)
+        awb = _cell(row, awb_index)
+        if not portal or not awb:
             continue
-
-        try:
-            header_row = max(int(source.get("header_row", 1)), 1)
-            values = client.open_by_key(sheet_id).worksheet(sheet_name).get_all_values()
-            if len(values) < header_row:
-                continue
-
-            headers = [_text(value) for value in values[header_row - 1]]
-            awb_index = _header_index(
-                headers,
-                _text(source.get("awb_column")),
-                {"awb", "awbnumber", "trackingnumber", "trackingnum", "waybill"},
-            )
-            name_index = _header_index(
-                headers,
-                _text(source.get("name_column")),
-                {"customername", "consigneename", "recipientname", "name"},
-            )
-            phone_index = _header_index(
-                headers,
-                _text(source.get("phone_column")),
-                {"mobile", "mobileno", "mobilenumber", "phone", "phonenumber", "number1"},
-            )
-            if awb_index is None:
-                continue
-
-            for row in values[header_row:]:
-                awb = _safe_cell(row, awb_index)
-                if not awb:
-                    continue
-                phone = normalize_phone(_safe_cell(row, phone_index))
-                name = _safe_cell(row, name_index)
-                if phone or name:
-                    result[(portal.casefold(), awb)] = {"name": name, "phone": phone}
-        except Exception:
-            continue
-
-    return result
+        contacts[(portal.casefold(), awb)] = {
+            "name": _cell(row, name_index),
+            "phone": normalize_phone(_cell(row, phone_index)),
+        }
+    return contacts
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_portal_master_contacts() -> dict[tuple[str, str], dict[str, str]]:
-    """Inspect complete portal master rows without changing existing dashboards."""
+    """Best-effort fallback using complete portal rows; logistics-only read."""
     client = get_gspread_client()
-    result: dict[tuple[str, str], dict[str, str]] = {}
+    contacts: dict[tuple[str, str], dict[str, str]] = {}
 
     for config in get_portal_configs():
         try:
@@ -191,7 +181,7 @@ def _load_portal_master_contacts() -> dict[tuple[str, str], dict[str, str]]:
             headers = [_text(value) for value in values[0]]
             awb_index = _header_index(
                 headers,
-                None,
+                "AWB",
                 {"awb", "awbnumber", "trackingnumber", "trackingnum", "trackingno", "waybill"},
             )
             if awb_index is None:
@@ -213,57 +203,46 @@ def _load_portal_master_contacts() -> dict[tuple[str, str], dict[str, str]]:
             ]
 
             for row in values[1:]:
-                awb = _safe_cell(row, awb_index)
+                awb = _cell(row, awb_index)
                 if not awb:
                     continue
 
                 phone = ""
                 for index in phone_indexes:
-                    candidate = _safe_cell(row, index)
-                    normalized = normalize_phone(candidate)
-                    if normalized and re.sub(r"\D", "", candidate) != re.sub(r"\D", "", awb):
-                        phone = normalized
+                    phone = normalize_phone(_cell(row, index))
+                    if phone:
                         break
-
-                if not phone:
-                    for index, cell in enumerate(row):
-                        if index == awb_index:
-                            continue
-                        normalized = normalize_phone(cell)
-                        if normalized and re.sub(r"\D", "", _text(cell)) != re.sub(r"\D", "", awb):
-                            phone = normalized
-                            break
 
                 name = ""
                 for index in name_indexes:
-                    candidate = _safe_cell(row, index)
+                    candidate = _cell(row, index)
                     if candidate and not _looks_like_reference(candidate) and not normalize_phone(candidate):
                         name = candidate
                         break
 
                 if phone or name:
-                    result[(config.name.casefold(), awb)] = {"name": name, "phone": phone}
+                    contacts[(config.name.casefold(), awb)] = {"name": name, "phone": phone}
         except Exception:
             continue
 
-    return result
+    return contacts
 
 
-def _directory_config() -> dict[str, Any]:
+def _customer_directory_config() -> dict[str, Any]:
     config = dict(DEFAULT_CUSTOMER_DIRECTORY)
     try:
         logistics = dict(st.secrets.get("logistics", {}))
     except Exception:
         logistics = {}
 
-    mappings = {
+    mapping = {
         "customer_directory_sheet_id": "sheet_id",
         "customer_directory_sheet_name": "sheet_name",
         "customer_directory_header_row": "header_row",
         "customer_directory_name_column": "name_column",
         "customer_directory_phone_column": "phone_column",
     }
-    for secret_key, config_key in mappings.items():
+    for secret_key, config_key in mapping.items():
         value = logistics.get(secret_key)
         if value not in (None, ""):
             config[config_key] = value
@@ -272,27 +251,20 @@ def _directory_config() -> dict[str, Any]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_name_directory() -> dict[str, str]:
-    config = _directory_config()
+    config = _customer_directory_config()
     client = get_gspread_client()
     try:
         values = (
-            client.open_by_key(_text(config.get("sheet_id")))
-            .worksheet(_text(config.get("sheet_name")))
+            client.open_by_key(_text(config["sheet_id"]))
+            .worksheet(_text(config["sheet_name"]))
             .get_all_values()
         )
         header_row = max(int(config.get("header_row", 1)), 1)
-        if len(values) < header_row:
-            return {}
-
         headers = [_text(value) for value in values[header_row - 1]]
-        name_index = _header_index(
-            headers,
-            _text(config.get("name_column")),
-            {"name", "customername", "whatsappname"},
-        )
+        name_index = _header_index(headers, _text(config["name_column"]), {"name", "customername"})
         phone_index = _header_index(
             headers,
-            _text(config.get("phone_column")),
+            _text(config["phone_column"]),
             {"phonenumber", "phone", "mobile", "mobilenumber"},
         )
         if name_index is None or phone_index is None:
@@ -300,8 +272,8 @@ def _load_name_directory() -> dict[str, str]:
 
         candidates: dict[str, set[str]] = {}
         for row in values[header_row:]:
-            name_key = _key(_safe_cell(row, name_index))
-            phone = normalize_phone(_safe_cell(row, phone_index))
+            name_key = _key(_cell(row, name_index))
+            phone = normalize_phone(_cell(row, phone_index))
             if name_key and phone:
                 candidates.setdefault(name_key, set()).add(phone)
 
@@ -315,13 +287,15 @@ def _load_name_directory() -> dict[str, str]:
 
 
 def enrich_case_contacts(cases: pd.DataFrame) -> pd.DataFrame:
-    """Correct customer name/mobile for the Logistics CRM display only."""
     if cases.empty:
         return cases
 
-    explicit = _load_explicit_awb_contacts()
-    portal_master = _load_portal_master_contacts()
-    directory = _load_name_directory()
+    try:
+        awb_contacts = _load_awb_contacts()
+    except Exception:
+        awb_contacts = {}
+    portal_contacts = _load_portal_master_contacts()
+    name_directory = _load_name_directory()
     enriched = cases.copy()
 
     for index, row in enriched.iterrows():
@@ -329,29 +303,28 @@ def enrich_case_contacts(cases: pd.DataFrame) -> pd.DataFrame:
         awb = _text(row.get("AWB"))
         existing_name = _text(row.get("Customer Name"))
         existing_mobile = _text(row.get("Mobile"))
-        lookup_key = (portal.casefold(), awb)
 
-        contact = explicit.get(lookup_key) or portal_master.get(lookup_key) or {}
+        contact = (
+            awb_contacts.get((portal.casefold(), awb))
+            or portal_contacts.get((portal.casefold(), awb))
+            or {}
+        )
         corrected_name = _text(contact.get("name"))
         corrected_phone = normalize_phone(contact.get("phone"))
-
         current_phone = normalize_phone(existing_mobile)
-        if current_phone:
-            corrected_phone = current_phone
 
         probable_name = existing_name
-        if not current_phone and existing_mobile and not normalize_phone(existing_mobile):
+        if not current_phone and existing_mobile:
             probable_name = existing_mobile
         if corrected_name:
             probable_name = corrected_name
         elif _looks_like_reference(probable_name) and existing_mobile:
             probable_name = existing_mobile
 
-        if not corrected_phone:
-            corrected_phone = directory.get(_key(probable_name), "")
-
+        # An authoritative AWB match takes precedence over the shifted source fields.
+        phone = corrected_phone or current_phone or name_directory.get(_key(probable_name), "")
         enriched.at[index, "Customer Name"] = probable_name or existing_name
-        enriched.at[index, "Mobile"] = corrected_phone
+        enriched.at[index, "Mobile"] = phone
 
     return enriched
 
@@ -390,7 +363,9 @@ def get_doubletick_embed_url(phone: str) -> str:
 
     payload: dict[str, str] = {"phone": normalized}
     integration_id = _secret_value("integration_id", "doubletick_integration_id")
-    waba_number = normalize_phone(_secret_value("waba_number", "sender_number", "doubletick_waba_number"))
+    waba_number = normalize_phone(
+        _secret_value("waba_number", "sender_number", "doubletick_waba_number")
+    )
     if integration_id:
         payload["integrationId"] = integration_id
     elif waba_number:
