@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -12,6 +13,33 @@ st.set_page_config(
     page_icon="🚚",
     layout="wide",
 )
+
+
+def _arrow_safe_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a display-only dataframe with stable Arrow-compatible types."""
+    safe = df.copy()
+    text_columns = {
+        "Portal",
+        "AWB",
+        "Customer Name",
+        "Mobile",
+        "Status",
+        "Remarks",
+        "Agent",
+        "Priority",
+        "PDF",
+    }
+
+    for column in safe.columns:
+        if column in text_columns or safe[column].dtype == "object":
+            safe[column] = safe[column].map(
+                lambda value: "" if pd.isna(value) else str(value).strip()
+            )
+        elif pd.api.types.is_datetime64_any_dtype(safe[column]):
+            safe[column] = safe[column].dt.strftime("%Y-%m-%d").fillna("")
+
+    return safe
+
 
 try:
     data, health = load_all_data()
@@ -114,20 +142,21 @@ st.subheader("Immediate action queue")
 queue = work[work["Is Critical"] | work["Is Follow Up"]].copy()
 
 if not queue.empty:
+    queue_view = queue[
+        [
+            "Portal",
+            "AWB",
+            "Customer Name",
+            "Mobile",
+            "Scheduled Date",
+            "Status",
+            "Remarks",
+            "Agent",
+            "Priority",
+        ]
+    ]
     st.dataframe(
-        queue[
-            [
-                "Portal",
-                "AWB",
-                "Customer Name",
-                "Mobile",
-                "Scheduled Date",
-                "Status",
-                "Remarks",
-                "Agent",
-                "Priority",
-            ]
-        ],
+        _arrow_safe_frame(queue_view),
         width="stretch",
         hide_index=True,
         height=520,
