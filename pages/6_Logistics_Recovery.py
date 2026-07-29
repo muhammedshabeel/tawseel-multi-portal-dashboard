@@ -16,282 +16,254 @@ from src.logistics import (
     sync_logistics_cases,
 )
 
-st.set_page_config(page_title="Logistics Recovery CRM", page_icon="🚚", layout="wide")
+st.set_page_config(page_title="Logistics Recovery", page_icon="🚚", layout="wide")
 
 
 def _error_text(exc: Exception) -> str:
-    message = str(exc).strip()
-    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
-def _service_account_email() -> str:
-    try:
-        return str(dict(st.secrets["google_service_account"]).get("client_email", "")).strip()
-    except Exception:
-        return ""
-
-
-def _logistics_sheet_id() -> str:
+def _sheet_id() -> str:
     try:
         return str(st.secrets.get("logistics", {}).get("sheet_id", DEFAULT_LOGISTICS_SHEET_ID)).strip()
     except Exception:
         return DEFAULT_LOGISTICS_SHEET_ID
 
 
-def _clean_phone(value: object) -> str:
-    raw = "" if value is None else str(value)
-    digits = "".join(ch for ch in raw if ch.isdigit())
-    if digits.startswith("00"):
-        digits = digits[2:]
-    return digits
+def _service_email() -> str:
+    try:
+        return str(dict(st.secrets["google_service_account"]).get("client_email", "")).strip()
+    except Exception:
+        return ""
 
 
-def _phone_href(value: object) -> str:
-    digits = _clean_phone(value)
+def _phone_digits(value: object) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits[2:] if digits.startswith("00") else digits
+
+
+def _call_link(value: object) -> str:
+    digits = _phone_digits(value)
     return f"tel:+{digits}" if digits else "#"
 
 
-def _whatsapp_href(value: object, customer: str, awb: str) -> str:
-    digits = _clean_phone(value)
-    text = (
-        f"Hello {customer}, this is the Emarath Logistics Team regarding your order "
-        f"{awb}. We are contacting you to coordinate the delivery."
+def _whatsapp_link(value: object, customer: str, awb: str) -> str:
+    digits = _phone_digits(value)
+    message = quote(
+        f"Hello {customer}, this is the Emarath Logistics Team regarding order {awb}. "
+        "We are contacting you to coordinate delivery."
     )
-    return f"https://wa.me/{digits}?text={quote(text)}" if digits else "#"
+    return f"https://wa.me/{digits}?text={message}" if digits else "#"
 
 
-st.title("🚚 Logistics Recovery CRM")
+def _safe_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    safe = df.copy()
+    for column in safe.columns:
+        if pd.api.types.is_datetime64_any_dtype(safe[column]):
+            safe[column] = safe[column].dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+        elif safe[column].dtype == "object":
+            safe[column] = safe[column].map(lambda value: "" if pd.isna(value) else str(value))
+    return safe
+
+
+st.title("🚚 Logistics Recovery")
 
 with st.sidebar:
     st.subheader("Workspace")
-    workspace_identity = st.selectbox("Working as", ["MANAGER", *AGENTS])
-
+    identity = st.selectbox("Working as", ["MANAGER", *AGENTS])
     st.divider()
-    if st.button("Sync orders", type="primary", use_container_width=True):
-        with st.spinner("Syncing logistics cases..."):
-            try:
-                result = sync_logistics_cases()
-                st.success(
-                    f"{result['created']} new · {result['updated']} updated · {result['eligible']} eligible"
-                )
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Sync failed — {_error_text(exc)}")
+    sync_clicked = st.button("Sync Orders", type="primary", use_container_width=True)
 
-try:
-    cases = load_cases()
-    activity = load_activity()
-except Exception as exc:
-    service_email = _service_account_email()
-    sheet_id = _logistics_sheet_id()
+if sync_clicked:
+    with st.spinner("Syncing logistics orders..."):
+        try:
+            result = sync_logistics_cases()
+            st.success(
+                f"Sync completed: {result['created']} new, {result['updated']} updated, "
+                f"{result['eligible']} eligible."
+            )
+            st.cache_data.clear()
+        except Exception as exc:
+            st.error(f"Sync failed — {_error_text(exc)}")
 
-    st.error(f"Connection required — {_error_text(exc)}")
-    st.subheader("Connect the logistics database")
+with st.spinner("Loading logistics workspace..."):
+    try:
+        cases = load_cases()
+        activity = load_activity()
+    except Exception as exc:
+        st.error(f"Unable to open logistics workspace — {_error_text(exc)}")
+        email = _service_email()
+        if email:
+            st.write("Share the Logistics Recovery spreadsheet with this service account as Editor:")
+            st.code(email)
+        st.link_button(
+            "Open Logistics Spreadsheet",
+            f"https://docs.google.com/spreadsheets/d/{_sheet_id()}/edit",
+        )
+        with st.expander("Technical details"):
+            st.code(repr(exc))
+        st.stop()
 
-    if service_email:
-        st.write("Share the Logistics Recovery spreadsheet with this email as **Editor**:")
-        st.code(service_email)
-    else:
-        st.warning("Google service-account details are missing from Streamlit secrets.")
-
-    st.link_button(
-        "Open Logistics Recovery spreadsheet",
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit",
-    )
-
-    with st.expander("Diagnostic details"):
-        st.code(repr(exc))
-        st.write(f"Spreadsheet ID: {sheet_id}")
-    st.stop()
-
+cases = _safe_frame(cases)
+activity = _safe_frame(activity)
 overall, agent_summary = logistics_summary(cases)
 
-metrics = st.columns(5)
-metrics[0].metric("Assigned", f"{int(overall['Assigned']):,}")
-metrics[1].metric("Active", f"{int(overall['Active']):,}")
-metrics[2].metric("Closed", f"{int(overall['Closed']):,}")
-metrics[3].metric("Recovered", f"{int(overall['Delivered After Coordination']):,}")
-metrics[4].metric("Recovery Rate", f"{float(overall['Recovery Rate']):.1%}")
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Assigned", int(overall["Assigned"]))
+k2.metric("Active", int(overall["Active"]))
+k3.metric("Closed", int(overall["Closed"]))
+k4.metric("Recovered", int(overall["Delivered After Coordination"]))
+k5.metric("Recovery Rate", f"{float(overall['Recovery Rate']):.1%}")
 
-if workspace_identity == "MANAGER":
-    overview_tab, queue_tab, agent_tab, activity_tab = st.tabs(
-        ["Overview", "Active Queue", "Agent Workspace", "Activity Log"]
+if identity == "MANAGER":
+    overview_tab, queue_tab, workspace_tab, history_tab = st.tabs(
+        ["Overview", "Active Queue", "Agent Workspace", "Activity History"]
     )
 else:
-    agent_tab, activity_tab = st.tabs(["My Cases", "My Activity"])
+    workspace_tab, history_tab = st.tabs(["My Cases", "My Activity"])
     overview_tab = queue_tab = None
 
 if overview_tab is not None:
     with overview_tab:
         st.subheader("Agent Performance")
         if agent_summary.empty:
-            st.info("No logistics cases have been assigned yet.")
+            st.info("No cases have been assigned yet.")
         else:
+            summary = _safe_frame(agent_summary)
+            summary["Recovery Rate"] = pd.to_numeric(summary["Recovery Rate"], errors="coerce").fillna(0)
             st.dataframe(
-                agent_summary.style.format({"Recovery Rate": "{:.1%}"}),
+                summary,
                 use_container_width=True,
                 hide_index=True,
+                column_config={"Recovery Rate": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)},
             )
 
         if not cases.empty:
             status_summary = (
-                cases["Logistics Work Status"]
-                .fillna("")
-                .replace("", "UNSPECIFIED")
-                .value_counts()
-                .rename_axis("Status")
-                .reset_index(name="Cases")
+                cases["Logistics Work Status"].replace("", "UNSPECIFIED").value_counts()
+                .rename_axis("Status").reset_index(name="Cases")
             )
             st.subheader("Status Summary")
-            st.dataframe(status_summary, use_container_width=True, hide_index=True)
+            st.dataframe(_safe_frame(status_summary), use_container_width=True, hide_index=True)
 
 if queue_tab is not None:
     with queue_tab:
         st.subheader("Active Queue")
         if cases.empty:
-            st.info("No cases available. Run a sync.")
+            st.info("No logistics cases available. Click Sync Orders.")
         else:
-            work = cases.copy()
-            work["Logistics Work Status"] = work["Logistics Work Status"].fillna("").astype(str)
-            active = work[~work["Logistics Work Status"].str.upper().eq("CLOSED")].copy()
-
+            active = cases[~cases["Logistics Work Status"].str.upper().eq("CLOSED")].copy()
             f1, f2, f3 = st.columns(3)
-            agent_filter = f1.multiselect("Agent", AGENTS, default=[])
-            priorities = sorted(v for v in active["Priority"].dropna().astype(str).unique() if v)
-            priority_filter = f2.multiselect("Priority", priorities, default=[])
-            search_text = f3.text_input("Search AWB, customer, or mobile")
+            selected_agents = f1.multiselect("Agent", AGENTS)
+            priorities = sorted(v for v in active["Priority"].unique() if v)
+            selected_priorities = f2.multiselect("Priority", priorities)
+            query = f3.text_input("Search AWB, customer, or mobile")
 
-            if agent_filter:
-                active = active[active["Logistics Agent"].astype(str).isin(agent_filter)]
-            if priority_filter:
-                active = active[active["Priority"].astype(str).isin(priority_filter)]
-            if search_text.strip():
-                needle = search_text.strip().casefold()
-                mask = (
-                    active["AWB"].astype(str).str.casefold().str.contains(needle, regex=False)
-                    | active["Customer Name"].astype(str).str.casefold().str.contains(needle, regex=False)
-                    | active["Mobile"].astype(str).str.casefold().str.contains(needle, regex=False)
-                )
-                active = active[mask]
+            if selected_agents:
+                active = active[active["Logistics Agent"].isin(selected_agents)]
+            if selected_priorities:
+                active = active[active["Priority"].isin(selected_priorities)]
+            if query.strip():
+                needle = query.strip().casefold()
+                active = active[
+                    active["AWB"].str.casefold().str.contains(needle, regex=False)
+                    | active["Customer Name"].str.casefold().str.contains(needle, regex=False)
+                    | active["Mobile"].str.casefold().str.contains(needle, regex=False)
+                ]
 
-            display_columns = [
+            columns = [
                 "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
                 "Courier Remarks", "Priority", "Logistics Agent", "Assigned At",
                 "Logistics Work Status", "Total Call Attempts", "Last Call Status",
                 "Customer Response", "Next Follow-up", "Agent Remark",
             ]
-            st.dataframe(active[display_columns], use_container_width=True, hide_index=True, height=560)
+            st.dataframe(_safe_frame(active[columns]), use_container_width=True, hide_index=True, height=560)
 
-with agent_tab:
-    selected_agent = st.selectbox("Logistics agent", AGENTS) if workspace_identity == "MANAGER" else workspace_identity
-    st.subheader(f"{selected_agent.title()} Workspace")
+with workspace_tab:
+    agent = st.selectbox("Agent", AGENTS) if identity == "MANAGER" else identity
+    assigned = cases[cases["Logistics Agent"].str.upper().eq(agent)] if not cases.empty else cases
+    active_cases = assigned[~assigned["Logistics Work Status"].str.upper().eq("CLOSED")]
 
-    assigned = cases[cases["Logistics Agent"].astype(str).str.upper().eq(selected_agent)] if not cases.empty else cases
-    active_assigned = assigned[~assigned["Logistics Work Status"].astype(str).str.upper().eq("CLOSED")]
+    st.subheader(f"{agent.title()} Workspace")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Assigned", len(assigned))
+    a2.metric("Active", len(active_cases))
+    a3.metric("Calls Logged", int(pd.to_numeric(assigned.get("Total Call Attempts", 0), errors="coerce").fillna(0).sum()))
+    a4.metric("Recovered", int(assigned["Delivered After Coordination"].str.upper().eq("YES").sum()) if not assigned.empty else 0)
 
-    cards = st.columns(4)
-    cards[0].metric("Assigned", len(assigned))
-    cards[1].metric("Active", len(active_assigned))
-    cards[2].metric(
-        "Calls Logged",
-        int(pd.to_numeric(assigned.get("Total Call Attempts", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()),
-    )
-    cards[3].metric(
-        "Recovered",
-        int(assigned["Delivered After Coordination"].astype(str).str.upper().eq("YES").sum()) if not assigned.empty else 0,
-    )
-
-    if active_assigned.empty:
-        st.info(f"No active cases assigned to {selected_agent}.")
+    if active_cases.empty:
+        st.info("No active cases assigned.")
     else:
-        case_labels = {
+        options = {
             f"{row['AWB']} — {row['Customer Name']} — {row['Latest Courier Status']}": row["Case ID"]
-            for _, row in active_assigned.iterrows()
+            for _, row in active_cases.iterrows()
         }
-        selected_label = st.selectbox("Select order", list(case_labels))
-        selected_case_id = case_labels[selected_label]
-        selected = active_assigned[active_assigned["Case ID"].astype(str).eq(selected_case_id)].iloc[0]
+        selected_label = st.selectbox("Select Order", list(options))
+        case_id = options[selected_label]
+        selected = active_cases[active_cases["Case ID"].eq(case_id)].iloc[0]
 
-        info1, info2, info3 = st.columns(3)
-        info1.write(f"**Portal:** {selected['Portal']}")
-        info1.write(f"**AWB:** {selected['AWB']}")
-        info2.write(f"**Customer:** {selected['Customer Name']}")
-        info2.write(f"**Mobile:** {selected['Mobile']}")
-        info3.write(f"**Courier Status:** {selected['Latest Courier Status']}")
-        info3.write(f"**Issue:** {selected['Courier Remarks']}")
+        d1, d2, d3 = st.columns(3)
+        d1.write(f"**Portal:** {selected['Portal']}")
+        d1.write(f"**AWB:** {selected['AWB']}")
+        d2.write(f"**Customer:** {selected['Customer Name']}")
+        d2.write(f"**Mobile:** {selected['Mobile']}")
+        d3.write(f"**Courier Status:** {selected['Latest Courier Status']}")
+        d3.write(f"**Issue:** {selected['Courier Remarks']}")
 
-        action1, action2, action3 = st.columns([1, 1, 2])
-        with action1:
-            st.link_button(
-                "📞 Call with 3CX",
-                _phone_href(selected["Mobile"]),
-                use_container_width=True,
-            )
-        with action2:
-            st.link_button(
-                "💬 Open WhatsApp",
-                _whatsapp_href(
-                    selected["Mobile"],
-                    str(selected["Customer Name"]),
-                    str(selected["AWB"]),
-                ),
-                use_container_width=True,
-            )
-        with action3:
-            st.caption("3CX must be configured as the default handler for telephone links on the agent's device.")
+        b1, b2 = st.columns(2)
+        b1.link_button("📞 Call with 3CX", _call_link(selected["Mobile"]), use_container_width=True)
+        b2.link_button(
+            "💬 Open WhatsApp",
+            _whatsapp_link(selected["Mobile"], selected["Customer Name"], selected["AWB"]),
+            use_container_width=True,
+        )
 
-        recent = activity[activity["Case ID"].astype(str).eq(selected_case_id)].copy()
-        if not recent.empty:
-            with st.expander("Recent activity", expanded=False):
+        case_history = activity[activity["Case ID"].eq(case_id)]
+        if not case_history.empty:
+            with st.expander("Case Activity"):
                 st.dataframe(
-                    recent.sort_values("Action At", ascending=False).head(10),
+                    _safe_frame(case_history.sort_values("Action At", ascending=False)),
                     use_container_width=True,
                     hide_index=True,
                 )
 
-        st.divider()
-        with st.form("activity_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            action_type = col1.selectbox("Action", ["CALL", "WHATSAPP", "COURIER_COORDINATION", "NOTE", "ESCALATION"])
-            new_status = col2.selectbox(
+        with st.form("save_activity", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            action = c1.selectbox("Action", ["CALL", "WHATSAPP", "COURIER_COORDINATION", "NOTE", "ESCALATION"])
+            work_status = c2.selectbox(
                 "Work Status",
-                ["IN PROGRESS", "FOLLOW-UP DUE", "CUSTOMER CONTACTED", "RESCHEDULED",
-                 "AWAITING COURIER", "ESCALATED", "UNRESOLVED"],
+                ["IN PROGRESS", "FOLLOW-UP DUE", "CUSTOMER CONTACTED", "RESCHEDULED", "AWAITING COURIER", "ESCALATED", "UNRESOLVED"],
             )
-
-            col3, col4 = st.columns(2)
-            call_result = col3.selectbox(
-                "Call Result",
-                ["", "Answered", "No Answer", "Switched Off", "Busy", "Invalid Number", "Call Back Later"],
-            )
-            customer_response = col4.selectbox(
+            c3, c4 = st.columns(2)
+            call_result = c3.selectbox("Call Result", ["", "Answered", "No Answer", "Switched Off", "Busy", "Invalid Number", "Call Back Later"])
+            customer_response = c4.selectbox(
                 "Customer Response",
-                ["", "Will Receive", "Requested Reschedule", "Customer Unavailable", "Location Changed",
-                 "Payment Issue", "Not Interested", "Order Cancelled", "Already Delivered", "Other"],
+                ["", "Will Receive", "Requested Reschedule", "Customer Unavailable", "Location Changed", "Payment Issue", "Not Interested", "Order Cancelled", "Already Delivered", "Other"],
             )
+            c5, c6 = st.columns(2)
+            follow_date = c5.date_input("Next Follow-up Date", value=None)
+            follow_time = c6.time_input("Next Follow-up Time", value=None)
+            remark = st.text_area("Remark")
+            save = st.form_submit_button("Save Activity", type="primary", use_container_width=True)
 
-            col5, col6 = st.columns(2)
-            next_date = col5.date_input("Next Follow-up Date", value=None)
-            next_time = col6.time_input("Next Follow-up Time", value=None)
-            remark = st.text_area("Remark", placeholder="Add call notes, customer response, and next action...")
-            submitted = st.form_submit_button("Save Activity", type="primary", use_container_width=True)
-
-        if submitted:
-            next_follow_up = ""
-            if next_date:
-                next_follow_up = str(next_date)
-                if next_time:
-                    next_follow_up = f"{next_date} {next_time.strftime('%H:%M')}"
+        if save:
+            follow_up = ""
+            if follow_date:
+                follow_up = str(follow_date)
+                if follow_time:
+                    follow_up += f" {follow_time.strftime('%H:%M')}"
             try:
                 add_activity(
-                    selected_case_id,
-                    action_type=action_type,
+                    case_id,
+                    action_type=action,
                     call_result=call_result,
                     customer_response=customer_response,
                     remark=remark,
-                    next_follow_up=next_follow_up,
-                    new_status=new_status,
+                    next_follow_up=follow_up,
+                    new_status=work_status,
                 )
                 st.success("Activity saved.")
                 st.rerun()
@@ -299,42 +271,39 @@ with agent_tab:
                 st.error(f"Could not save activity — {_error_text(exc)}")
 
         with st.expander("Close Case"):
-            with st.form("close_form"):
+            with st.form("close_case_form"):
                 outcome = st.selectbox(
                     "Final Outcome",
-                    ["Delivered After Logistics Follow-up", "Rescheduled", "Customer Cancelled",
-                     "Confirmed RTO", "Back to Store", "Invalid Customer", "Duplicate", "Unresolved", "Escalated"],
+                    ["Delivered After Logistics Follow-up", "Rescheduled", "Customer Cancelled", "Confirmed RTO", "Back to Store", "Invalid Customer", "Duplicate", "Unresolved", "Escalated"],
                 )
                 recovered = st.checkbox("Delivered after logistics coordination")
                 delivered_date = st.date_input("Delivered Date", value=None)
-                close_remark = st.text_area("Closure Remark")
-                close_submit = st.form_submit_button("Close Case", use_container_width=True)
-            if close_submit:
+                closing_remark = st.text_area("Closure Remark")
+                close = st.form_submit_button("Close Case", use_container_width=True)
+            if close:
                 try:
                     close_case(
-                        selected_case_id,
+                        case_id,
                         outcome=outcome,
                         delivered_after_coordination=recovered,
                         delivered_date=str(delivered_date or ""),
-                        remark=close_remark,
+                        remark=closing_remark,
                     )
                     st.success("Case closed.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not close case — {_error_text(exc)}")
 
-with activity_tab:
-    st.subheader("Activity History" if workspace_identity == "MANAGER" else "My Activity")
-    activity_view = activity.copy()
-    if workspace_identity != "MANAGER" and not activity_view.empty:
-        activity_view = activity_view[
-            activity_view["Logistics Agent"].astype(str).str.upper().eq(workspace_identity)
-        ]
-    if activity_view.empty:
-        st.info("No activities recorded yet.")
+with history_tab:
+    st.subheader("Activity History" if identity == "MANAGER" else "My Activity")
+    history = activity.copy()
+    if identity != "MANAGER" and not history.empty:
+        history = history[history["Logistics Agent"].str.upper().eq(identity)]
+    if history.empty:
+        st.info("No activity recorded yet.")
     else:
         st.dataframe(
-            activity_view.sort_values("Action At", ascending=False),
+            _safe_frame(history.sort_values("Action At", ascending=False)),
             use_container_width=True,
             hide_index=True,
             height=650,
