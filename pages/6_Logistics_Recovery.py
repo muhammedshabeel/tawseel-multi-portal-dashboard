@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from urllib.parse import quote
-
 import pandas as pd
 import streamlit as st
 
@@ -14,6 +12,12 @@ from src.logistics import (
     load_cases,
     logistics_summary,
     sync_logistics_cases,
+)
+from src.logistics_integrations import (
+    enrich_case_contacts,
+    get_doubletick_embed_url,
+    normalize_phone,
+    phone_display,
 )
 
 st.set_page_config(page_title="Logistics Recovery", page_icon="🚚", layout="wide")
@@ -38,23 +42,9 @@ def _service_email() -> str:
         return ""
 
 
-def _phone_digits(value: object) -> str:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    return digits[2:] if digits.startswith("00") else digits
-
-
 def _call_link(value: object) -> str:
-    digits = _phone_digits(value)
+    digits = normalize_phone(value)
     return f"tel:+{digits}" if digits else "#"
-
-
-def _whatsapp_link(value: object, customer: str, awb: str) -> str:
-    digits = _phone_digits(value)
-    message = quote(
-        f"Hello {customer}, this is the Emarath Logistics Team regarding order {awb}. "
-        "We are contacting you to coordinate delivery."
-    )
-    return f"https://wa.me/{digits}?text={message}" if digits else "#"
 
 
 def _safe_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -86,6 +76,7 @@ if sync_clicked:
                 f"{result['eligible']} eligible."
             )
             st.cache_data.clear()
+            st.rerun()
         except Exception as exc:
             st.error(f"Sync failed — {_error_text(exc)}")
 
@@ -93,6 +84,7 @@ with st.spinner("Loading logistics workspace..."):
     try:
         cases = load_cases()
         activity = load_activity()
+        cases = enrich_case_contacts(cases)
     except Exception as exc:
         st.error(f"Unable to open logistics workspace — {_error_text(exc)}")
         email = _service_email()
@@ -138,13 +130,20 @@ if overview_tab is not None:
                 summary,
                 use_container_width=True,
                 hide_index=True,
-                column_config={"Recovery Rate": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)},
+                column_config={
+                    "Recovery Rate": st.column_config.ProgressColumn(
+                        format="percent", min_value=0, max_value=1
+                    )
+                },
             )
 
         if not cases.empty:
             status_summary = (
-                cases["Logistics Work Status"].replace("", "UNSPECIFIED").value_counts()
-                .rename_axis("Status").reset_index(name="Cases")
+                cases["Logistics Work Status"]
+                .replace("", "UNSPECIFIED")
+                .value_counts()
+                .rename_axis("Status")
+                .reset_index(name="Cases")
             )
             st.subheader("Status Summary")
             st.dataframe(_safe_frame(status_summary), use_container_width=True, hide_index=True)
@@ -175,12 +174,30 @@ if queue_tab is not None:
                 ]
 
             columns = [
-                "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
-                "Courier Remarks", "Priority", "Logistics Agent", "Assigned At",
-                "Logistics Work Status", "Total Call Attempts", "Last Call Status",
-                "Customer Response", "Next Follow-up", "Agent Remark",
+                "Portal",
+                "AWB",
+                "Customer Name",
+                "Mobile",
+                "Latest Courier Status",
+                "Courier Remarks",
+                "Priority",
+                "Logistics Agent",
+                "Assigned At",
+                "Logistics Work Status",
+                "Total Call Attempts",
+                "Last Call Status",
+                "Customer Response",
+                "Next Follow-up",
+                "Agent Remark",
             ]
-            st.dataframe(_safe_frame(active[columns]), use_container_width=True, hide_index=True, height=560)
+            queue_view = active[columns].copy()
+            queue_view["Mobile"] = queue_view["Mobile"].map(phone_display)
+            st.dataframe(
+                _safe_frame(queue_view),
+                use_container_width=True,
+                hide_index=True,
+                height=560,
+            )
 
 with workspace_tab:
     agent = st.selectbox("Agent", AGENTS) if identity == "MANAGER" else identity
@@ -191,8 +208,23 @@ with workspace_tab:
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Assigned", len(assigned))
     a2.metric("Active", len(active_cases))
-    a3.metric("Calls Logged", int(pd.to_numeric(assigned.get("Total Call Attempts", 0), errors="coerce").fillna(0).sum()))
-    a4.metric("Recovered", int(assigned["Delivered After Coordination"].str.upper().eq("YES").sum()) if not assigned.empty else 0)
+    a3.metric(
+        "Calls Logged",
+        int(
+            pd.to_numeric(
+                assigned.get("Total Call Attempts", pd.Series(dtype=float)),
+                errors="coerce",
+            )
+            .fillna(0)
+            .sum()
+        ),
+    )
+    a4.metric(
+        "Recovered",
+        int(assigned["Delivered After Coordination"].str.upper().eq("YES").sum())
+        if not assigned.empty
+        else 0,
+    )
 
     if active_cases.empty:
         st.info("No active cases assigned.")
@@ -204,22 +236,59 @@ with workspace_tab:
         selected_label = st.selectbox("Select Order", list(options))
         case_id = options[selected_label]
         selected = active_cases[active_cases["Case ID"].eq(case_id)].iloc[0]
+        valid_phone = normalize_phone(selected["Mobile"])
 
         d1, d2, d3 = st.columns(3)
         d1.write(f"**Portal:** {selected['Portal']}")
         d1.write(f"**AWB:** {selected['AWB']}")
         d2.write(f"**Customer:** {selected['Customer Name']}")
-        d2.write(f"**Mobile:** {selected['Mobile']}")
+        d2.write(f"**Mobile:** {phone_display(selected['Mobile'])}")
         d3.write(f"**Courier Status:** {selected['Latest Courier Status']}")
         d3.write(f"**Issue:** {selected['Courier Remarks']}")
 
         b1, b2 = st.columns(2)
-        b1.link_button("📞 Call with 3CX", _call_link(selected["Mobile"]), use_container_width=True)
-        b2.link_button(
-            "💬 Open WhatsApp",
-            _whatsapp_link(selected["Mobile"], selected["Customer Name"], selected["AWB"]),
-            use_container_width=True,
-        )
+        with b1:
+            if valid_phone:
+                st.link_button(
+                    "📞 Call via 3CX",
+                    _call_link(valid_phone),
+                    use_container_width=True,
+                )
+            else:
+                st.button(
+                    "📞 Call via 3CX",
+                    disabled=True,
+                    use_container_width=True,
+                    help="No valid customer mobile number was found for this order.",
+                )
+
+        with b2:
+            doubletick_state_key = f"doubletick_url_{case_id}"
+            if st.button(
+                "💬 Open in DoubleTick",
+                use_container_width=True,
+                disabled=not bool(valid_phone),
+                help=None if valid_phone else "No valid customer mobile number was found for this order.",
+            ):
+                try:
+                    with st.spinner("Opening DoubleTick conversation..."):
+                        st.session_state[doubletick_state_key] = get_doubletick_embed_url(valid_phone)
+                except Exception as exc:
+                    st.error(f"Could not open DoubleTick — {_error_text(exc)}")
+
+            doubletick_url = st.session_state.get(doubletick_state_key, "")
+            if doubletick_url:
+                st.link_button(
+                    "Continue to DoubleTick Chat",
+                    doubletick_url,
+                    use_container_width=True,
+                )
+
+        if not valid_phone:
+            st.warning(
+                "A valid customer mobile number could not be resolved for this order. "
+                "Calling and DoubleTick chat are disabled."
+            )
 
         case_history = activity[activity["Case ID"].eq(case_id)]
         if not case_history.empty:
@@ -232,22 +301,57 @@ with workspace_tab:
 
         with st.form("save_activity", clear_on_submit=True):
             c1, c2 = st.columns(2)
-            action = c1.selectbox("Action", ["CALL", "WHATSAPP", "COURIER_COORDINATION", "NOTE", "ESCALATION"])
+            action = c1.selectbox(
+                "Action",
+                ["CALL", "WHATSAPP", "COURIER_COORDINATION", "NOTE", "ESCALATION"],
+            )
             work_status = c2.selectbox(
                 "Work Status",
-                ["IN PROGRESS", "FOLLOW-UP DUE", "CUSTOMER CONTACTED", "RESCHEDULED", "AWAITING COURIER", "ESCALATED", "UNRESOLVED"],
+                [
+                    "IN PROGRESS",
+                    "FOLLOW-UP DUE",
+                    "CUSTOMER CONTACTED",
+                    "RESCHEDULED",
+                    "AWAITING COURIER",
+                    "ESCALATED",
+                    "UNRESOLVED",
+                ],
             )
             c3, c4 = st.columns(2)
-            call_result = c3.selectbox("Call Result", ["", "Answered", "No Answer", "Switched Off", "Busy", "Invalid Number", "Call Back Later"])
+            call_result = c3.selectbox(
+                "Call Result",
+                [
+                    "",
+                    "Answered",
+                    "No Answer",
+                    "Switched Off",
+                    "Busy",
+                    "Invalid Number",
+                    "Call Back Later",
+                ],
+            )
             customer_response = c4.selectbox(
                 "Customer Response",
-                ["", "Will Receive", "Requested Reschedule", "Customer Unavailable", "Location Changed", "Payment Issue", "Not Interested", "Order Cancelled", "Already Delivered", "Other"],
+                [
+                    "",
+                    "Will Receive",
+                    "Requested Reschedule",
+                    "Customer Unavailable",
+                    "Location Changed",
+                    "Payment Issue",
+                    "Not Interested",
+                    "Order Cancelled",
+                    "Already Delivered",
+                    "Other",
+                ],
             )
             c5, c6 = st.columns(2)
             follow_date = c5.date_input("Next Follow-up Date", value=None)
             follow_time = c6.time_input("Next Follow-up Time", value=None)
             remark = st.text_area("Remark")
-            save = st.form_submit_button("Save Activity", type="primary", use_container_width=True)
+            save = st.form_submit_button(
+                "Save Activity", type="primary", use_container_width=True
+            )
 
         if save:
             follow_up = ""
@@ -274,7 +378,17 @@ with workspace_tab:
             with st.form("close_case_form"):
                 outcome = st.selectbox(
                     "Final Outcome",
-                    ["Delivered After Logistics Follow-up", "Rescheduled", "Customer Cancelled", "Confirmed RTO", "Back to Store", "Invalid Customer", "Duplicate", "Unresolved", "Escalated"],
+                    [
+                        "Delivered After Logistics Follow-up",
+                        "Rescheduled",
+                        "Customer Cancelled",
+                        "Confirmed RTO",
+                        "Back to Store",
+                        "Invalid Customer",
+                        "Duplicate",
+                        "Unresolved",
+                        "Escalated",
+                    ],
                 )
                 recovered = st.checkbox("Delivered after logistics coordination")
                 delivered_date = st.date_input("Delivered Date", value=None)
