@@ -13,7 +13,6 @@ from src.logistics import (
     load_activity,
     load_cases,
     logistics_summary,
-    sync_logistics_cases,
 )
 from src.logistics_integrations import enrich_case_contacts, normalize_phone, phone_display
 from src.logistics_links import doubletick_chat_link, threecx_webclient_url
@@ -24,6 +23,10 @@ from src.logistics_reporting import (
     filter_cases_by_date,
     resolve_date_window,
     save_daily_report_snapshot,
+)
+from src.logistics_status_tracking import (
+    enrich_cases_with_status_updates,
+    sync_logistics_cases_with_status_tracking,
 )
 
 st.set_page_config(page_title="Logistics Recovery", page_icon="🚚", layout="wide")
@@ -68,6 +71,25 @@ def _safe_frame(df: pd.DataFrame) -> pd.DataFrame:
     return safe
 
 
+def _sort_by_latest_status(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    work = df.copy()
+    work["_status_updated_sort"] = pd.to_datetime(
+        work.get("Tawseel Status Updated At", ""),
+        errors="coerce",
+        format="mixed",
+    )
+    work["_priority_sort"] = work.get("Priority", "").astype(str).str.upper().map(
+        {"CRITICAL": 0, "FOLLOW-UP": 1}
+    ).fillna(2)
+    return work.sort_values(
+        ["_status_updated_sort", "_priority_sort", "Assigned At"],
+        ascending=[False, True, False],
+        na_position="last",
+    ).drop(columns=["_status_updated_sort", "_priority_sort"], errors="ignore")
+
+
 st.title("🚚 Logistics Recovery")
 
 with st.sidebar:
@@ -75,12 +97,18 @@ with st.sidebar:
     identity = st.selectbox("Working as", ["MANAGER", *AGENTS])
 
     st.divider()
-    st.subheader("Order Date Filter")
+    st.subheader("Tawseel Status Priority Filter")
     date_view = st.selectbox(
-        "Period",
-        ["All Dates", "Today", "Yesterday", "Custom Range"],
+        "Status Updated Period",
+        ["Today", "Last 2 Days", "Last 3 Days", "Last 7 Days", "Yesterday", "Custom Range", "All Dates"],
+        index=2,
     )
-    date_basis = st.selectbox("Filter By", list(DATE_BASIS_COLUMNS))
+    date_basis = st.selectbox(
+        "Filter By",
+        list(DATE_BASIS_COLUMNS),
+        index=0,
+        help="Use Tawseel Status Update Date to work on the most recently changed courier cases first.",
+    )
     default_end = date.today()
     default_start = default_end - timedelta(days=7)
     custom_start = st.date_input(
@@ -98,12 +126,12 @@ with st.sidebar:
     sync_clicked = st.button("Sync Orders", type="primary", use_container_width=True)
 
 if sync_clicked:
-    with st.spinner("Syncing logistics orders..."):
+    with st.spinner("Syncing logistics orders and detecting Tawseel status changes..."):
         try:
-            result = sync_logistics_cases()
+            result = sync_logistics_cases_with_status_tracking()
             st.success(
-                f"Sync completed: {result['created']} new, {result['updated']} updated, "
-                f"{result['eligible']} eligible."
+                f"Sync completed: {result['created']} new, {result['updated']} refreshed, "
+                f"{result.get('status_changed', 0)} status changes detected."
             )
             st.cache_data.clear()
             st.rerun()
@@ -113,6 +141,7 @@ if sync_clicked:
 with st.spinner("Loading logistics workspace..."):
     try:
         all_cases = enrich_case_contacts(load_cases())
+        all_cases = enrich_cases_with_status_updates(all_cases)
         activity = load_activity()
     except Exception as exc:
         st.error(f"Unable to open logistics workspace — {_error_text(exc)}")
@@ -132,10 +161,16 @@ all_cases = _safe_frame(all_cases)
 activity = _safe_frame(activity)
 start_date, end_date = resolve_date_window(date_view, custom_start, custom_end)
 cases = filter_cases_by_date(all_cases, date_basis, start_date, end_date)
+cases = _sort_by_latest_status(cases)
 overall, agent_summary = logistics_summary(cases)
 
 if start_date and end_date:
-    st.caption(f"Showing {date_basis.lower()} from {start_date} to {end_date}")
+    st.caption(
+        f"Showing orders with {date_basis.lower()} from {start_date} to {end_date}. "
+        "Newest Tawseel status updates are listed first."
+    )
+else:
+    st.caption("Showing all assigned orders, sorted by newest Tawseel status update first.")
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Assigned", int(overall["Assigned"]))
@@ -158,7 +193,7 @@ if overview_tab is not None:
     with overview_tab:
         st.subheader("Agent Performance")
         if agent_summary.empty:
-            st.info("No cases match the selected date filter.")
+            st.info("No cases match the selected Tawseel status date filter.")
         else:
             summary = _safe_frame(agent_summary)
             summary["Recovery Rate"] = pd.to_numeric(
@@ -177,21 +212,21 @@ if overview_tab is not None:
 
         if not cases.empty:
             status_summary = (
-                cases["Logistics Work Status"]
+                cases["Latest Courier Status"]
                 .replace("", "UNSPECIFIED")
                 .value_counts()
-                .rename_axis("Status")
+                .rename_axis("Tawseel Status")
                 .reset_index(name="Cases")
             )
-            st.subheader("Status Summary")
+            st.subheader("Latest Tawseel Status Summary")
             st.dataframe(_safe_frame(status_summary), use_container_width=True, hide_index=True)
 
 if queue_tab is not None:
     with queue_tab:
-        st.subheader("Active Queue")
+        st.subheader("Active Queue — Latest Tawseel Updates First")
         active = cases[~cases["Logistics Work Status"].str.upper().eq("CLOSED")].copy()
         if active.empty:
-            st.info("No active logistics cases match the selected filter.")
+            st.info("No active logistics cases match the selected Tawseel status date filter.")
         else:
             f1, f2, f3 = st.columns(3)
             selected_agents = f1.multiselect("Agent", AGENTS)
@@ -212,14 +247,21 @@ if queue_tab is not None:
                 ]
 
             columns = [
-                "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
-                "Courier Remarks", "Priority", "Logistics Agent", "Assigned At",
-                "Logistics Work Status", "Total Call Attempts", "Last Call Status",
-                "Customer Response", "Next Follow-up", "Agent Remark",
+                "Tawseel Status Updated At", "Status Age Days", "Portal", "AWB",
+                "Customer Name", "Mobile", "Previous Courier Status", "Latest Courier Status",
+                "Courier Remarks", "Priority", "Logistics Agent", "Logistics Work Status",
+                "Total Call Attempts", "Last Call Status", "Customer Response", "Next Follow-up",
             ]
-            queue_view = active[columns].copy()
-            queue_view["Mobile"] = queue_view["Mobile"].map(phone_display)
-            st.dataframe(_safe_frame(queue_view), use_container_width=True, hide_index=True, height=560)
+            available = [column for column in columns if column in active.columns]
+            queue_view = _sort_by_latest_status(active)[available].copy()
+            if "Mobile" in queue_view.columns:
+                queue_view["Mobile"] = queue_view["Mobile"].map(phone_display)
+            st.dataframe(
+                _safe_frame(queue_view),
+                use_container_width=True,
+                hide_index=True,
+                height=560,
+            )
 
 with workspace_tab:
     agent = st.selectbox("Agent", AGENTS) if identity == "MANAGER" else identity
@@ -228,11 +270,12 @@ with workspace_tab:
         if not cases.empty
         else cases
     )
+    assigned = _sort_by_latest_status(assigned)
     active_cases = assigned[~assigned["Logistics Work Status"].str.upper().eq("CLOSED")]
 
     st.subheader(f"{agent.title()} Workspace")
     a1, a2, a3, a4 = st.columns(4)
-    a1.metric("Assigned", len(assigned))
+    a1.metric("Assigned in Filter", len(assigned))
     a2.metric("Active", len(active_cases))
     a3.metric(
         "Calls Logged",
@@ -245,13 +288,16 @@ with workspace_tab:
     )
 
     if active_cases.empty:
-        st.info("No active cases match the selected date filter.")
+        st.info("No active cases match the selected Tawseel status date filter.")
     else:
         options = {
-            f"{row['AWB']} — {row['Customer Name']} — {row['Latest Courier Status']}": row["Case ID"]
+            (
+                f"{row['Tawseel Status Updated At']} — {row['AWB']} — "
+                f"{row['Customer Name']} — {row['Latest Courier Status']}"
+            ): row["Case ID"]
             for _, row in active_cases.iterrows()
         }
-        selected_label = st.selectbox("Select Order", list(options))
+        selected_label = st.selectbox("Select Order — Latest Status First", list(options))
         case_id = options[selected_label]
         selected = active_cases[active_cases["Case ID"].eq(case_id)].iloc[0]
         valid_phone = normalize_phone(selected["Mobile"])
@@ -262,7 +308,8 @@ with workspace_tab:
         d2.write(f"**Customer:** {selected['Customer Name']}")
         d2.write(f"**Mobile:** {phone_display(selected['Mobile'])}")
         d3.write(f"**Courier Status:** {selected['Latest Courier Status']}")
-        d3.write(f"**Issue:** {selected['Courier Remarks']}")
+        d3.write(f"**Status Updated:** {selected.get('Tawseel Status Updated At', '')}")
+        st.write(f"**Issue:** {selected['Courier Remarks']}")
 
         b1, b2 = st.columns(2)
         if valid_phone:
@@ -275,7 +322,11 @@ with workspace_tab:
         case_history = activity[activity["Case ID"].eq(case_id)]
         if not case_history.empty:
             with st.expander("Case Activity"):
-                st.dataframe(_safe_frame(case_history.sort_values("Action At", ascending=False)), use_container_width=True, hide_index=True)
+                st.dataframe(
+                    _safe_frame(case_history.sort_values("Action At", ascending=False)),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
         with st.form("save_activity", clear_on_submit=True):
             c1, c2 = st.columns(2)
@@ -345,7 +396,6 @@ with report_tab:
     st.subheader("Daily Agent Report" if identity == "MANAGER" else "My Daily Report")
     report_date = st.date_input("Report Date", value=date.today(), key="daily_report_date")
     daily_report = daily_agent_report(all_cases, activity, report_date)
-
     if identity != "MANAGER":
         daily_report = daily_report[daily_report["Agent"].eq(identity)]
 
@@ -362,7 +412,6 @@ with report_tab:
                 "Recovery Rate": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)
             },
         )
-
         totals = daily_report.sum(numeric_only=True)
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("Handled Orders", int(totals.get("Handled Orders", 0)))
@@ -385,23 +434,24 @@ with report_tab:
                 details["Mobile"] = details["Mobile"].map(phone_display)
             st.dataframe(_safe_frame(details), use_container_width=True, hide_index=True, height=520)
 
-        if identity == "MANAGER":
-            if st.button("Save Daily Report to Google Sheets", use_container_width=True):
-                try:
-                    saved = save_daily_report_snapshot(report_date, daily_report)
-                    st.success(f"Saved {saved} agent report rows to LOGISTICS_DAILY_REPORT.")
-                except Exception as exc:
-                    st.error(f"Could not save daily report — {_error_text(exc)}")
+        if identity == "MANAGER" and st.button("Save Daily Report to Google Sheets", use_container_width=True):
+            try:
+                saved = save_daily_report_snapshot(report_date, daily_report)
+                st.success(f"Saved {saved} agent report rows to LOGISTICS_DAILY_REPORT.")
+            except Exception as exc:
+                st.error(f"Could not save daily report — {_error_text(exc)}")
 
 with history_tab:
     st.subheader("Activity History" if identity == "MANAGER" else "My Activity")
     history = activity.copy()
     if identity != "MANAGER" and not history.empty:
         history = history[history["Logistics Agent"].str.upper().eq(identity)]
-    if start_date and end_date and not history.empty:
-        action_dates = pd.to_datetime(history["Action At"], errors="coerce", format="mixed").dt.date
-        history = history[action_dates.between(start_date, end_date, inclusive="both")]
     if history.empty:
-        st.info("No activity recorded for the selected period.")
+        st.info("No activity recorded.")
     else:
-        st.dataframe(_safe_frame(history.sort_values("Action At", ascending=False)), use_container_width=True, hide_index=True, height=650)
+        st.dataframe(
+            _safe_frame(history.sort_values("Action At", ascending=False)),
+            use_container_width=True,
+            hide_index=True,
+            height=650,
+        )
