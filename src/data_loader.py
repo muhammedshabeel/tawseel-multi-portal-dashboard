@@ -58,6 +58,10 @@ def get_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
+def _clean_text_series(series: pd.Series) -> pd.Series:
+    return series.map(lambda value: "" if pd.isna(value) else str(value).strip())
+
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     aliases = {
         "awb": "AWB",
@@ -101,8 +105,81 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[required]
 
 
-def _clean_text_series(series: pd.Series) -> pd.Series:
-    return series.map(lambda value: "" if pd.isna(value) else str(value).strip())
+def _normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the portal Tawseel_AWB tab used as the contact authority."""
+    aliases = {
+        "awb": "AWB",
+        "tracking number": "AWB",
+        "tracking num": "AWB",
+        "tracking no": "AWB",
+        "agent": "Input Agent",
+        "customer name": "Input Customer Name",
+        "customer_name": "Input Customer Name",
+        "name": "Input Customer Name",
+        "phone": "Input Phone",
+        "mobile": "Input Phone",
+        "phone number": "Input Phone",
+        "mobile number": "Input Phone",
+    }
+
+    rename: dict[Any, str] = {}
+    for col in df.columns:
+        key = str(col).strip().lower()
+        if key in aliases:
+            rename[col] = aliases[key]
+
+    work = df.rename(columns=rename)
+    required = ["AWB", "Input Agent", "Input Customer Name", "Input Phone"]
+    for column in required:
+        if column not in work.columns:
+            work[column] = ""
+
+    work = work[required].copy()
+    for column in required:
+        work[column] = _clean_text_series(work[column])
+
+    work = work[work["AWB"].ne("")].copy()
+    return work.drop_duplicates("AWB", keep="last")
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def load_portal_input(config: PortalConfig) -> pd.DataFrame:
+    client = get_gspread_client()
+    worksheet = client.open_by_key(config.sheet_id).worksheet(config.input_tab)
+    records = worksheet.get_all_records(default_blank="", numericise_ignore=["all"])
+    return _normalize_input_columns(pd.DataFrame(records))
+
+
+def _enrich_master_from_input(master: pd.DataFrame, input_rows: pd.DataFrame) -> pd.DataFrame:
+    """Correct shifted customer/mobile fields using an exact AWB match.
+
+    Tawseeel_Orders remains the status source. Tawseel_AWB is used only for
+    customer name and phone because it contains the original order contact data.
+    No source spreadsheet is modified.
+    """
+    if master.empty or input_rows.empty:
+        return master
+
+    merged = master.merge(input_rows, on="AWB", how="left", validate="m:1")
+
+    input_name = _clean_text_series(merged["Input Customer Name"])
+    input_phone = _clean_text_series(merged["Input Phone"])
+    input_agent = _clean_text_series(merged["Input Agent"])
+
+    name_mask = input_name.ne("")
+    phone_mask = input_phone.ne("")
+    missing_agent = _clean_text_series(merged["Agent"]).isin(["", "Unassigned"])
+
+    merged.loc[name_mask, "Customer Name"] = input_name[name_mask]
+    merged.loc[phone_mask, "Mobile"] = input_phone[phone_mask]
+    merged.loc[missing_agent & input_agent.ne(""), "Agent"] = input_agent[
+        missing_agent & input_agent.ne("")
+    ]
+
+    return merged.drop(
+        columns=["Input Agent", "Input Customer Name", "Input Phone"],
+        errors="ignore",
+    )
 
 
 @st.cache_data(ttl=180, show_spinner=False)
@@ -112,10 +189,23 @@ def load_portal_master(config: PortalConfig) -> pd.DataFrame:
     records = worksheet.get_all_records(default_blank="", numericise_ignore=["all"])
     df = _normalize_columns(pd.DataFrame(records))
 
+    for column in [
+        "AWB",
+        "Customer Name",
+        "Mobile",
+        "Status",
+        "Remarks",
+        "PDF",
+        "Agent",
+        "Priority",
+    ]:
+        df[column] = _clean_text_series(df[column])
+
+    # Exact-AWB enrichment fixes cases where Tawseeel_Orders contains the order
+    # reference in Customer Name and the actual customer name in Mobile.
+    df = _enrich_master_from_input(df, load_portal_input(config))
     df.insert(0, "Portal", config.name)
 
-    # Keep identifiers and display fields consistently textual. This prevents
-    # mixed int/string phone values from failing Streamlit Arrow serialization.
     for column in [
         "Portal",
         "AWB",
@@ -131,7 +221,6 @@ def load_portal_master(config: PortalConfig) -> pd.DataFrame:
 
     df["Agent"] = df["Agent"].replace("", "Unassigned")
 
-    # Parse only non-empty values and keep malformed values as NaT.
     raw_dates = _clean_text_series(df["Scheduled Date"])
     df["Scheduled Date"] = pd.to_datetime(
         raw_dates.where(raw_dates.ne("")),
@@ -140,15 +229,25 @@ def load_portal_master(config: PortalConfig) -> pd.DataFrame:
         format="mixed",
     )
 
-    return df
+    return df[
+        [
+            "Portal",
+            "AWB",
+            "Customer Name",
+            "Mobile",
+            "Scheduled Date",
+            "Status",
+            "Remarks",
+            "PDF",
+            "Agent",
+            "Priority",
+        ]
+    ]
 
 
 @st.cache_data(ttl=180, show_spinner=False)
 def load_input_count(config: PortalConfig) -> int:
-    client = get_gspread_client()
-    worksheet = client.open_by_key(config.sheet_id).worksheet(config.input_tab)
-    values = worksheet.col_values(1)
-    return max(len([value for value in values[1:] if str(value).strip()]), 0)
+    return int(load_portal_input(config)["AWB"].ne("").sum())
 
 
 def load_all_data() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -188,7 +287,17 @@ def load_all_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if not combined.empty:
-        for column in ["Portal", "AWB", "Customer Name", "Mobile", "Status", "Remarks", "PDF", "Agent", "Priority"]:
+        for column in [
+            "Portal",
+            "AWB",
+            "Customer Name",
+            "Mobile",
+            "Status",
+            "Remarks",
+            "PDF",
+            "Agent",
+            "Priority",
+        ]:
             if column in combined.columns:
                 combined[column] = _clean_text_series(combined[column])
 
