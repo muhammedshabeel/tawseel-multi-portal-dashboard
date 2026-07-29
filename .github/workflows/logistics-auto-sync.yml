@@ -3,6 +3,8 @@ name: Logistics Auto Sync
 on:
   schedule:
     - cron: "*/10 * * * *"
+  repository_dispatch:
+    types: [tawseel-refresh-complete]
   workflow_dispatch:
     inputs:
       force:
@@ -24,11 +26,11 @@ jobs:
     timeout-minutes: 20
     env:
       STREAMLIT_SECRETS_TOML: ${{ secrets.STREAMLIT_SECRETS_TOML }}
-      LOGISTICS_SYNC_SOURCE: github_actions
+      LOGISTICS_SYNC_SOURCE: ${{ github.event_name }}
       LOGISTICS_SYNC_MIN_INTERVAL_SECONDS: "300"
       LOGISTICS_SYNC_LEASE_MINUTES: "20"
       LOGISTICS_SYNC_MAX_ATTEMPTS: "4"
-      LOGISTICS_SYNC_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+      LOGISTICS_SYNC_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.force) || github.event_name == 'repository_dispatch' }}
 
     steps:
       - name: Check out repository
