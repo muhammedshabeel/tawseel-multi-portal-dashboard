@@ -8,6 +8,7 @@ import streamlit as st
 from src.logistics_integrations import normalize_phone
 
 DEFAULT_DOUBLETICK_WABA = "971521367907"
+DEFAULT_3CX_WEBCLIENT_URL = "https://eciwe1.3cx.ae:6001/"
 
 
 def _configured_doubletick_waba() -> str:
@@ -39,10 +40,31 @@ def _configured_doubletick_waba() -> str:
     return DEFAULT_DOUBLETICK_WABA
 
 
-def threecx_call_link(phone: object) -> str:
-    """Use callto: so the 3CX Click2Call extension can intercept the call."""
-    normalized = normalize_phone(phone)
-    return f"callto:+{normalized}" if normalized else "#"
+def threecx_webclient_url() -> str:
+    candidates: list[object] = []
+    try:
+        threecx = dict(st.secrets.get("threecx", {}))
+        logistics = dict(st.secrets.get("logistics", {}))
+        candidates.extend(
+            [
+                threecx.get("webclient_url"),
+                logistics.get("threecx_webclient_url"),
+            ]
+        )
+    except Exception:
+        pass
+
+    candidates.extend(
+        [
+            os.getenv("THREECX_WEBCLIENT_URL"),
+            DEFAULT_3CX_WEBCLIENT_URL,
+        ]
+    )
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value.startswith("https://") or value.startswith("http://"):
+            return value
+    return DEFAULT_3CX_WEBCLIENT_URL
 
 
 def doubletick_chat_link(phone: object) -> str:
