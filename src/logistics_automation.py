@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import gspread
 
 from src.logistics import logistics_book
+from src.logistics_backup import mirror_logistics_backup
 from src.logistics_status_tracking import sync_logistics_cases_with_status_tracking
 
 HEALTH_SHEET = "LOGISTICS_AUTOMATION_HEALTH"
@@ -27,6 +28,8 @@ HEALTH_HEADERS = [
     "Updated",
     "Reopened",
     "Status Changed",
+    "Backup Status",
+    "Backup Error",
     "Error",
     "Result JSON",
 ]
@@ -118,6 +121,13 @@ def _is_recent_success(health: dict[str, str], minimum_interval_seconds: int) ->
     )
 
 
+def _has_data_changes(result: dict[str, Any]) -> bool:
+    return any(
+        int(result.get(key, 0) or 0) > 0
+        for key in ["created", "updated", "reopened", "status_changed"]
+    )
+
+
 def run_automated_sync(
     *,
     source: str,
@@ -126,7 +136,7 @@ def run_automated_sync(
     lease_minutes: int = 15,
     max_attempts: int = 4,
 ) -> dict[str, Any]:
-    """Run an idempotent logistics sync with throttling, retry and health logging."""
+    """Run an idempotent logistics sync with throttling, retries and backup."""
     with _PROCESS_LOCK:
         health = read_automation_health()
         if not force and _is_recent_success(health, minimum_interval_seconds):
@@ -149,6 +159,8 @@ def run_automated_sync(
                 "Status": "RUNNING",
                 "Source": source,
                 "Attempt": "0",
+                "Backup Status": "PENDING",
+                "Backup Error": "",
                 "Error": "",
             }
         )
@@ -158,11 +170,31 @@ def run_automated_sync(
             try:
                 _write_health({"Attempt": str(attempt), "Status": "RUNNING"})
                 result = sync_logistics_cases_with_status_tracking()
+
+                backup_status = "NOT_REQUIRED"
+                backup_error = ""
+                if _has_data_changes(result):
+                    try:
+                        backup_result = mirror_logistics_backup()
+                        result["backup"] = backup_result
+                        backup_status = "SUCCESS"
+                    except Exception as backup_exc:
+                        backup_status = "WARNING"
+                        backup_error = (
+                            f"{type(backup_exc).__name__}: {str(backup_exc).strip()}"
+                        )
+                        result["backup_error"] = backup_error
+
                 finished_at = _now()
+                status = (
+                    "SUCCESS_WITH_BACKUP_WARNING"
+                    if backup_status == "WARNING"
+                    else "SUCCESS"
+                )
                 success_record = {
                     "Last Finished At": finished_at,
                     "Last Success At": finished_at,
-                    "Status": "SUCCESS",
+                    "Status": status,
                     "Source": source,
                     "Attempt": str(attempt),
                     "Source Orders": result.get("source_total", ""),
@@ -172,6 +204,8 @@ def run_automated_sync(
                     "Updated": result.get("updated", 0),
                     "Reopened": result.get("reopened", 0),
                     "Status Changed": result.get("status_changed", 0),
+                    "Backup Status": backup_status,
+                    "Backup Error": backup_error,
                     "Error": "",
                     "Result JSON": json.dumps(result, sort_keys=True, default=str),
                 }
