@@ -10,6 +10,7 @@ import streamlit as st
 from gspread.utils import rowcol_to_a1
 
 from src.logistics import load_cases, logistics_book, sync_logistics_cases
+from src.logistics_critical_reactivation import reactivate_newly_critical_cases
 
 STATUS_HEADERS = [
     "Case ID",
@@ -119,10 +120,9 @@ def _write_status_updates(statuses: pd.DataFrame) -> None:
 def sync_logistics_cases_with_status_tracking() -> dict[str, int]:
     """Run the isolated logistics sync and persist detected Tawseel status changes.
 
-    Tawseel source sheets currently do not store a dedicated status-event timestamp.
-    Therefore, the status update time is the Dubai time at which Sync Orders first
-    detects that the Tawseel status changed. Unchanged statuses retain their original
-    detected timestamp.
+    New critical/follow-up orders are assigned automatically. Existing assigned
+    cases are refreshed even after their Tawseel status leaves the critical set.
+    Closed cases that become critical again are reopened for the same agent.
     """
     before = load_cases()
     before_status = {
@@ -132,6 +132,9 @@ def sync_logistics_cases_with_status_tracking() -> dict[str, int]:
     }
 
     result = sync_logistics_cases()
+    reactivation = reactivate_newly_critical_cases()
+    result.update(reactivation)
+
     after = load_cases()
     tracked = load_status_updates()
     now = _now()
