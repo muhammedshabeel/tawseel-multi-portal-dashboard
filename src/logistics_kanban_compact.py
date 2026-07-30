@@ -394,13 +394,6 @@ def _inject_compact_styles(drawer_open: bool) -> None:
             color: #94a3b8;
             font-size: 0.7rem;
         }}
-        .lk-more-count {{
-            padding: 0.32rem;
-            text-align: center;
-            color: #64748b;
-            font-size: 0.65rem;
-            font-weight: 650;
-        }}
         @media (max-width: 1100px) {{
             .lk-secondary-strip {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
         }}
@@ -772,7 +765,7 @@ def render_logistics_kanban_compact(
         f"""
         <div class="lk-workspace-head">
             <div class="lk-workspace-title">{escape(agent.title())} Workspace</div>
-            <div class="lk-workspace-subtitle">Prioritised recovery queue · latest Tawseel updates first</div>
+            <div class="lk-workspace-subtitle">All matching open orders are shown. Scroll each status column to access every case.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -815,8 +808,8 @@ def render_logistics_kanban_compact(
         return
 
     with st.container(key=f"kanban_filters_{_slug(agent)}"):
-        search_col, focus_col, portal_col, date_col, limit_col = st.columns(
-            [2.3, 1.25, 1.1, 1.05, 0.72], gap="small"
+        search_col, focus_col, portal_col, date_col = st.columns(
+            [2.6, 1.25, 1.1, 1.1], gap="small"
         )
         query = search_col.text_input(
             "Search orders",
@@ -841,12 +834,6 @@ def render_logistics_kanban_compact(
             "Status date",
             ["All Dates", *available_dates],
             key=f"kanban_status_date_compact_{agent}",
-        )
-        card_limit = limit_col.selectbox(
-            "Cards",
-            [8, 12, 20, 30],
-            index=1,
-            key=f"kanban_limit_compact_{agent}",
         )
 
     board_cases = _filter_status_date(open_all, status_date)
@@ -909,7 +896,7 @@ def render_logistics_kanban_compact(
                     unsafe_allow_html=True,
                 )
                 with st.container(
-                    height=540,
+                    height=640,
                     border=False,
                     key=f"kanban_column_{stage_key}",
                 ):
@@ -919,14 +906,8 @@ def render_logistics_kanban_compact(
                             unsafe_allow_html=True,
                         )
                     else:
-                        for _, row in stage_cases.head(card_limit).iterrows():
+                        for _, row in stage_cases.iterrows():
                             _render_compact_card(agent, row, stage)
-                        hidden = len(stage_cases) - min(len(stage_cases), card_limit)
-                        if hidden > 0:
-                            st.markdown(
-                                f'<div class="lk-more-count">+{hidden} more · increase Cards or use filters</div>',
-                                unsafe_allow_html=True,
-                            )
 
     if drawer_open:
         with st.container(key="logistics_order_drawer"):
