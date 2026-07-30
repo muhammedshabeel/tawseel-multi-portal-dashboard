@@ -9,7 +9,7 @@ from src.logistics import AGENTS, DEFAULT_LOGISTICS_SHEET_ID, load_activity, loa
 from src.logistics_contact_fallback import fill_missing_customer_phones
 from src.logistics_dashboard_metrics import logistics_case_masks, logistics_dashboard_summary
 from src.logistics_integrations import enrich_case_contacts, phone_display
-from src.logistics_kanban_compact import render_logistics_kanban_compact
+from src.logistics_kanban_runtime import render_logistics_kanban_compact
 from src.logistics_reporting import (
     daily_agent_report,
     daily_case_details,
