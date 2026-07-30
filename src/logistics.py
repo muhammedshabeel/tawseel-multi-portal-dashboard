@@ -31,6 +31,7 @@ CASE_HEADERS = [
     "Customer Response", "Next Follow-up", "Rescheduled Date", "Agent Remark",
     "Courier Coordination Done", "Logistics Final Outcome", "Delivered After Coordination",
     "Logistics Delivered Date", "Closed At", "Created At", "Updated At",
+    "Previous Courier Status",
 ]
 
 ACTIVITY_HEADERS = [
@@ -140,8 +141,28 @@ def load_activity() -> pd.DataFrame:
     return activity.copy()
 
 
+def _ensure_headers(worksheet: gspread.Worksheet, headers: list[str]) -> None:
+    """Append newly introduced columns without shifting existing logistics data."""
+    existing = [_text(value) for value in worksheet.row_values(1)]
+    if not existing:
+        worksheet.update("A1", [headers])
+        worksheet.freeze(rows=1)
+        return
+
+    missing = [header for header in headers if header not in existing]
+    if not missing:
+        return
+
+    required_columns = len(existing) + len(missing)
+    if worksheet.col_count < required_columns:
+        worksheet.add_cols(required_columns - worksheet.col_count)
+    start_column = len(existing) + 1
+    start_a1 = rowcol_to_a1(1, start_column)
+    worksheet.update(start_a1, [missing], value_input_option="USER_ENTERED")
+
+
 def ensure_logistics_structure() -> None:
-    """Create missing logistics storage tabs only when a write/sync is requested."""
+    """Create missing logistics tabs and safely migrate newly added columns."""
     book = logistics_book()
     existing = {worksheet.title for worksheet in book.worksheets()}
     definitions = {
@@ -151,15 +172,18 @@ def ensure_logistics_structure() -> None:
     }
 
     for title, (rows, cols, headers) in definitions.items():
-        if title in existing:
+        if title not in existing:
+            worksheet = book.add_worksheet(title=title, rows=rows, cols=cols)
+            if headers:
+                worksheet.update("A1", [headers])
+                worksheet.freeze(rows=1)
+            elif title == "LOGISTICS_SETTINGS":
+                worksheet.update("A1", SETTINGS_ROWS)
+                worksheet.freeze(rows=1)
             continue
-        worksheet = book.add_worksheet(title=title, rows=rows, cols=cols)
+
         if headers:
-            worksheet.update("A1", [headers])
-            worksheet.freeze(rows=1)
-        elif title == "LOGISTICS_SETTINGS":
-            worksheet.update("A1", SETTINGS_ROWS)
-            worksheet.freeze(rows=1)
+            _ensure_headers(_worksheet(title), headers)
 
 
 def make_case_id(portal: str, awb: str) -> str:
@@ -168,11 +192,7 @@ def make_case_id(portal: str, awb: str) -> str:
 
 
 def _operational_sources() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return all Tawseel orders plus the subset eligible for new assignment.
-
-    All source orders are used to refresh cases already present in Logistics.
-    Only critical/follow-up orders can create new Logistics cases.
-    """
+    """Return all Tawseel orders plus the subset eligible for new assignment."""
     source, _ = load_all_data()
     if source.empty:
         return source.copy(), source.copy()
@@ -238,7 +258,6 @@ def _batch_update_rows(
 
 
 def _source_map(source: pd.DataFrame) -> dict[str, dict[str, Any]]:
-    """Build a stable Portal+AWB lookup, keeping the latest source occurrence."""
     lookup: dict[str, dict[str, Any]] = {}
     if source.empty:
         return lookup
@@ -253,12 +272,7 @@ def _source_map(source: pd.DataFrame) -> dict[str, dict[str, Any]]:
 
 
 def sync_logistics_cases() -> dict[str, int]:
-    """Refresh all assigned cases and add only new eligible cases.
-
-    This is a one-way read from Tawseel/operational sheets into the isolated
-    Logistics workbook. Existing Logistics assignments, activity, remarks,
-    outcomes and recovery data are never overwritten.
-    """
+    """Refresh existing cases and assign new critical/follow-up orders."""
     with _WRITE_LOCK:
         ensure_logistics_structure()
         all_source, eligible_source = _operational_sources()
@@ -279,8 +293,6 @@ def sync_logistics_cases() -> dict[str, int]:
         matched_existing = 0
         status_changes = 0
 
-        # Refresh every case already assigned to Logistics, even when its new
-        # Tawseel status is Delivered/OFD/Sorting and it is no longer critical.
         for case_id, frame_index in existing.items():
             source_row = all_source_by_case.get(case_id)
             if source_row is None:
@@ -294,7 +306,10 @@ def sync_logistics_cases() -> dict[str, int]:
             latest_original_agent = _text(source_row.get("Agent", ""))
 
             changed = False
-            if latest_status and latest_status != _text(current.get("Latest Courier Status")):
+            stored_latest = _text(current.get("Latest Courier Status"))
+            if latest_status and latest_status != stored_latest:
+                if stored_latest:
+                    current["Previous Courier Status"] = stored_latest
                 current["Latest Courier Status"] = latest_status
                 status_changes += 1
                 changed = True
@@ -314,7 +329,6 @@ def sync_logistics_cases() -> dict[str, int]:
                     (frame_index + 2, _row_values(current, CASE_HEADERS))
                 )
 
-        # Only currently critical/follow-up source rows create new assignments.
         new_source_rows: list[dict[str, Any]] = []
         for case_id, source_row in eligible_by_case.items():
             if case_id not in existing:
@@ -379,7 +393,6 @@ def sync_logistics_cases() -> dict[str, int]:
 
 
 def refresh_agent_views() -> None:
-    """Deprecated compatibility hook. Agent filtering is handled inside the CRM UI."""
     return None
 
 
@@ -540,12 +553,8 @@ def logistics_summary(
 
     rows: list[dict[str, Any]] = []
     for agent, group in cases.groupby("Logistics Agent", dropna=False):
-        agent_closed = (
-            group["Logistics Work Status"].astype(str).str.upper().eq("CLOSED")
-        )
-        agent_delivered = (
-            group["Delivered After Coordination"].astype(str).str.upper().eq("YES")
-        )
+        agent_closed = group["Logistics Work Status"].astype(str).str.upper().eq("CLOSED")
+        agent_delivered = group["Delivered After Coordination"].astype(str).str.upper().eq("YES")
         rows.append(
             {
                 "Agent": agent or "Unassigned",
