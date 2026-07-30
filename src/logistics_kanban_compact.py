@@ -22,13 +22,72 @@ from src.logistics_kanban_workspace import (
 from src.logistics_links import doubletick_chat_link, threecx_webclient_url
 
 
+KANBAN_STAGES = (*BOARD_STAGES, "RTO Converted")
+
 STAGE_META = {
     "New": {"icon": "🆕", "accent": "#3b82f6", "hint": "Not started"},
     "In Progress": {"icon": "⚙️", "accent": "#f59e0b", "hint": "Being handled"},
     "Follow-up": {"icon": "⏰", "accent": "#8b5cf6", "hint": "Needs follow-up"},
     "RTO": {"icon": "↩️", "accent": "#ef4444", "hint": "Return recovery"},
     "Delivered Review": {"icon": "✅", "accent": "#10b981", "hint": "Confirm recovery"},
+    "RTO Converted": {"icon": "🏆", "accent": "#0f766e", "hint": "Converted RTO"},
 }
+
+RTO_WORK_STATUS_OPTIONS = [
+    "IN PROGRESS",
+    "FOLLOW-UP DUE",
+    "CUSTOMER CONTACTED",
+    "AWAITING COURIER",
+    "ESCALATED",
+    "UNRESOLVED",
+]
+
+STANDARD_RESPONSES = [
+    "",
+    "Will Receive",
+    "Requested Reschedule",
+    "Customer Unavailable",
+    "Location Changed",
+    "Payment Issue",
+    "Not Interested",
+    "Order Cancelled",
+    "Already Delivered",
+    "Other",
+]
+
+RTO_RESPONSES = [
+    "",
+    "Will Receive",
+    "Customer Unavailable",
+    "Location Changed",
+    "Payment Issue",
+    "Not Interested",
+    "Order Cancelled",
+    "Already Delivered",
+]
+
+EXPORT_COLUMNS = [
+    "Portal",
+    "AWB",
+    "Customer Name",
+    "Mobile",
+    "Source Courier Status",
+    "Latest Courier Status",
+    "Courier Remarks",
+    "Original Agent",
+    "Logistics Agent",
+    "Assigned At",
+    "Total Call Attempts",
+    "Last Call At",
+    "Last Call Status",
+    "Customer Response",
+    "Agent Remark",
+    "Logistics Final Outcome",
+    "Delivered After Coordination",
+    "Logistics Delivered Date",
+    "Closed At",
+    "Updated At",
+]
 
 
 def _slug(value: str) -> str:
@@ -127,7 +186,16 @@ def _inject_styles() -> None:
             font-size: 0.76rem !important;
             font-weight: 700 !important;
         }
-
+        .lk-rto-guidance {
+            margin: 0.42rem 0 0.55rem 0;
+            padding: 0.55rem 0.62rem;
+            border: 1px solid rgba(239, 68, 68, 0.16);
+            border-radius: 9px;
+            background: rgba(239, 68, 68, 0.055);
+            color: #991b1b;
+            font-size: 0.72rem;
+            line-height: 1.3;
+        }
         .lk-drawer-title {
             color: #0f172a;
             font-size: 1.04rem;
@@ -277,7 +345,7 @@ def _inject_styles() -> None:
             gap: 0.32rem;
             min-width: 0;
             font-weight: 760;
-            font-size: 0.86rem;
+            font-size: 0.82rem;
             white-space: nowrap;
         }
         .lk-stage-count {
@@ -305,6 +373,7 @@ def _inject_styles() -> None:
         .st-key-kanban_column_follow_up { --stage-accent: #8b5cf6; background: rgba(139,92,246,.03); }
         .st-key-kanban_column_rto { --stage-accent: #ef4444; background: rgba(239,68,68,.03); }
         .st-key-kanban_column_delivered_review { --stage-accent: #10b981; background: rgba(16,185,129,.03); }
+        .st-key-kanban_column_rto_converted { --stage-accent: #0f766e; background: rgba(15,118,110,.035); }
         [class*="st-key-kanban_column_"] > div { padding: 0.42rem !important; }
         [class*="st-key-kanban_card_"] {
             margin-bottom: 0.4rem;
@@ -410,6 +479,8 @@ def _inject_styles() -> None:
 
 
 def _priority_badge(row: pd.Series, stage: str) -> str:
+    if stage == "RTO Converted":
+        return "🏆 Converted"
     priority = _text(row.get("Priority")).upper()
     if "CRITICAL" in priority:
         return "🔥 Critical"
@@ -446,12 +517,34 @@ def _follow_up_due_mask(cases: pd.DataFrame) -> pd.Series:
     return follow_up.dt.date.le(date.today()).fillna(False)
 
 
+def _rto_context(selected: pd.Series) -> tuple[bool, bool, bool]:
+    frame = selected.to_frame().T
+    masks = logistics_case_masks(frame)
+    return (
+        bool(masks["current_rto"].iloc[0]),
+        bool(masks["rto_origin"].iloc[0]),
+        bool(masks["tawseel_delivered"].iloc[0]),
+    )
+
+
 def _render_quick_update(agent: str, selected: pd.Series) -> None:
     case_id = _text(selected.get("Case ID"))
     current_status = _text(selected.get("Logistics Work Status")).upper()
-    status_index = WORK_STATUS_OPTIONS.index(current_status) if current_status in WORK_STATUS_OPTIONS else 0
+    is_current_rto, _, _ = _rto_context(selected)
+    status_options = RTO_WORK_STATUS_OPTIONS if is_current_rto else WORK_STATUS_OPTIONS
+    response_options = RTO_RESPONSES if is_current_rto else STANDARD_RESPONSES
+    status_index = status_options.index(current_status) if current_status in status_options else 0
 
-    st.markdown('<div class="lk-section-title">Update activity</div><div class="lk-section-help">Log the latest customer or courier coordination.</div>', unsafe_allow_html=True)
+    if is_current_rto:
+        st.markdown(
+            '<div class="lk-rto-guidance"><strong>RTO conversion workflow:</strong> continue customer and courier follow-up until Tawseel confirms delivery. Reschedule and generic “Other” outcomes are disabled for this case.</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="lk-section-title">Update activity</div><div class="lk-section-help">Log the latest customer or courier coordination.</div>',
+        unsafe_allow_html=True,
+    )
     with st.form(f"drawer_update_{agent}_{case_id}", clear_on_submit=True):
         action_col, status_col = st.columns(2, gap="small")
         action = action_col.selectbox(
@@ -459,7 +552,7 @@ def _render_quick_update(agent: str, selected: pd.Series) -> None:
             ["CALL", "WHATSAPP", "COURIER_COORDINATION", "NOTE", "ESCALATION"],
         )
         work_status = status_col.selectbox(
-            "Work status", WORK_STATUS_OPTIONS, index=status_index
+            "Work status", status_options, index=status_index
         )
         result_col, response_col = st.columns(2, gap="small")
         call_result = result_col.selectbox(
@@ -467,8 +560,7 @@ def _render_quick_update(agent: str, selected: pd.Series) -> None:
             ["", "Answered", "No Answer", "Switched Off", "Busy", "Invalid Number", "Call Back Later"],
         )
         customer_response = response_col.selectbox(
-            "Customer response",
-            ["", "Will Receive", "Requested Reschedule", "Customer Unavailable", "Location Changed", "Payment Issue", "Not Interested", "Order Cancelled", "Already Delivered", "Other"],
+            "Customer response", response_options
         )
         follow_col, time_col = st.columns(2, gap="small")
         follow_date = follow_col.date_input(
@@ -518,31 +610,63 @@ def _render_history(selected_id: str, activity: pd.DataFrame) -> None:
 
 def _render_quick_close(agent: str, selected: pd.Series) -> None:
     case_id = _text(selected.get("Case ID"))
-    st.caption("Close only after confirming the final result.")
-    with st.form(f"drawer_close_{agent}_{case_id}"):
-        outcome = st.selectbox(
-            "Final outcome",
-            ["Delivered After Logistics Follow-up", "Delivered - No Recovery Credit", "Rescheduled", "Customer Cancelled", "Confirmed RTO", "Back to Store", "Invalid Customer", "Duplicate", "Unresolved", "Escalated"],
+    is_current_rto, is_rto_origin, is_delivered = _rto_context(selected)
+
+    if is_current_rto and not is_delivered:
+        st.info(
+            "This RTO case must remain open for recovery follow-up. Close and conversion credit become available only after Tawseel changes the order to Delivered."
         )
-        recovered = st.checkbox("Delivered after logistics coordination")
+        return
+
+    st.caption("Close only after confirming the final result.")
+    if is_rto_origin:
+        outcome_options = ["Delivered After Logistics Follow-up"]
+        recovered_default = True
+        recovered_disabled = True
+    else:
+        outcome_options = [
+            "Delivered After Logistics Follow-up",
+            "Delivered - No Recovery Credit",
+            "Rescheduled",
+            "Customer Cancelled",
+            "Confirmed RTO",
+            "Back to Store",
+            "Invalid Customer",
+            "Duplicate",
+            "Unresolved",
+            "Escalated",
+        ]
+        recovered_default = False
+        recovered_disabled = False
+
+    with st.form(f"drawer_close_{agent}_{case_id}"):
+        outcome = st.selectbox("Final outcome", outcome_options)
+        recovered = st.checkbox(
+            "Delivered after logistics coordination",
+            value=recovered_default,
+            disabled=recovered_disabled,
+        )
         delivered_date = st.date_input(
             "Delivered date", value=None, key=f"drawer_delivered_date_{agent}_{case_id}"
         )
         closing_remark = st.text_area(
             "Closure remark", height=66, placeholder="Reason or final coordination result..."
         )
-        close_clicked = st.form_submit_button("Confirm and close case", width="stretch")
+        close_clicked = st.form_submit_button("Confirm RTO conversion" if is_rto_origin else "Confirm and close case", width="stretch")
 
     if close_clicked:
+        if is_rto_origin and not is_delivered:
+            st.error("Tawseel must show Delivered before an RTO conversion can be confirmed.")
+            return
         try:
             close_case(
                 case_id,
                 outcome=outcome,
-                delivered_after_coordination=recovered,
+                delivered_after_coordination=True if is_rto_origin else recovered,
                 delivered_date=str(delivered_date or ""),
                 remark=closing_remark,
             )
-            st.toast("Case closed", icon="✅")
+            st.toast("RTO converted" if is_rto_origin else "Case closed", icon="✅")
             st.rerun()
         except Exception as exc:
             st.error(f"Could not close case — {_error_text(exc)}")
@@ -588,7 +712,9 @@ def _order_drawer(
         unsafe_allow_html=True,
     )
 
-    if bool(selected_masks["pending_review"].iloc[0]):
+    if bool(selected_masks["rto_converted"].iloc[0]):
+        st.success("This order was converted from RTO and delivered after logistics follow-up.")
+    elif bool(selected_masks["pending_review"].iloc[0]):
         st.info("Delivered by Tawseel. Confirm recovery credit, then close the case.")
 
     left, right = st.columns(2, gap="small")
@@ -600,10 +726,12 @@ def _order_drawer(
         right.button("💬 DoubleTick", disabled=True, width="stretch")
         st.warning("No valid mobile number is available for this order.")
 
-    _render_quick_update(agent, selected)
-
-    with st.expander("Close case", expanded=False):
-        _render_quick_close(agent, selected)
+    if not bool(selected_masks["closed"].iloc[0]):
+        _render_quick_update(agent, selected)
+        with st.expander("Close case", expanded=False):
+            _render_quick_close(agent, selected)
+    else:
+        st.caption("This case is closed. Activity history remains available below.")
 
     with st.expander("Activity history", expanded=False):
         _render_history(case_id, activity)
@@ -626,7 +754,7 @@ def _render_card(
 
     with st.container(border=False, key=f"kanban_card_{_slug(agent)}_{case_id}"):
         follow_html = ""
-        if next_follow_up:
+        if next_follow_up and stage != "RTO Converted":
             follow_html = f'<div class="lk-follow-chip">Next: {escape(_compact_text(next_follow_up, 22))}</div>'
         st.markdown(
             f"""
@@ -642,11 +770,19 @@ def _render_card(
             unsafe_allow_html=True,
         )
         if st.button(
-            "Open →",
+            "View →" if stage == "RTO Converted" else "Open →",
             key=f"kanban_open_{agent}_{case_id}",
             width="stretch",
         ):
             _order_drawer(agent, case_id, assigned_all, activity)
+
+
+def _export_frame(cases: pd.DataFrame) -> pd.DataFrame:
+    columns = [column for column in EXPORT_COLUMNS if column in cases.columns]
+    export = cases[columns].copy()
+    if "Mobile" in export.columns:
+        export["Mobile"] = export["Mobile"].map(phone_display)
+    return export
 
 
 @st.fragment
@@ -661,13 +797,17 @@ def render_logistics_kanban_compact(
         all_cases["Logistics Agent"].astype(str).str.upper().eq(agent.upper())
     ].copy()
     masks = logistics_case_masks(assigned_all)
-    open_all = _sort_latest(assigned_all[~masks["closed"]].copy())
+
+    # Keep successful RTO conversions visible on the Kanban after closure.
+    visible_mask = ~masks["closed"] | masks["rto_converted"]
+    visible_all = _sort_latest(assigned_all[visible_mask].copy())
+    converted_all = _sort_latest(assigned_all[masks["rto_converted"]].copy())
 
     st.markdown(
         f"""
         <div class="lk-workspace-head">
             <div class="lk-workspace-title">{escape(agent.title())} Workspace</div>
-            <div class="lk-workspace-subtitle">Click an order to open the right-side workspace. Click outside, press ESC, or use X to close.</div>
+            <div class="lk-workspace-subtitle">RTO cases remain in follow-up until Tawseel confirms delivery. Successful conversions stay available in RTO Converted.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -677,7 +817,7 @@ def render_logistics_kanban_compact(
     _metric_card(primary[0], label="Assigned", value=len(assigned_all), accent="#3b82f6")
     _metric_card(primary[1], label="Active", value=int(masks["active"].sum()), accent="#f59e0b")
     _metric_card(primary[2], label="RTO", value=int(masks["current_rto"].sum()), accent="#ef4444")
-    _metric_card(primary[3], label="Recovered", value=int(masks["recovered"].sum()), accent="#10b981")
+    _metric_card(primary[3], label="RTO Converted", value=int(masks["rto_converted"].sum()), accent="#0f766e")
 
     total_calls = int(
         pd.to_numeric(
@@ -690,18 +830,20 @@ def render_logistics_kanban_compact(
             <div class="lk-secondary-item"><span>Tawseel Delivered</span><strong>{int(masks['tawseel_delivered'].sum()):,}</strong></div>
             <div class="lk-secondary-item"><span>Pending Review</span><strong>{int(masks['pending_review'].sum()):,}</strong></div>
             <div class="lk-secondary-item"><span>Calls Logged</span><strong>{total_calls:,}</strong></div>
-            <div class="lk-secondary-item"><span>Recovered from RTO</span><strong>{int(masks['rto_recovered'].sum()):,}</strong></div>
+            <div class="lk-secondary-item"><span>Total Recovered</span><strong>{int(masks['recovered'].sum()):,}</strong></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if open_all.empty:
-        st.info("No open cases assigned.")
+    if visible_all.empty:
+        st.info("No open or converted RTO cases assigned.")
         return
 
     with st.container(key=f"kanban_filters_{_slug(agent)}"):
-        search_col, focus_col, portal_col, date_col = st.columns([2.6, 1.25, 1.1, 1.1], gap="small")
+        search_col, focus_col, portal_col, date_col, export_col = st.columns(
+            [2.35, 1.18, 1.05, 1.05, 1.15], gap="small"
+        )
         query = search_col.text_input(
             "Search orders",
             placeholder="AWB, customer, mobile or remark",
@@ -709,21 +851,33 @@ def render_logistics_kanban_compact(
         )
         focus = focus_col.selectbox(
             "Focus",
-            ["All open", "Critical", "Uncontacted", "Follow-up due"],
+            ["All visible", "Critical", "Uncontacted", "Follow-up due", "RTO", "RTO Converted"],
             key=f"kanban_focus_{agent}",
         )
-        portals = sorted(value for value in open_all["Portal"].astype(str).unique() if value)
+        portals = sorted(value for value in visible_all["Portal"].astype(str).unique() if value)
         portal = portal_col.selectbox(
             "Portal", ["All Portals", *portals], key=f"kanban_portal_{agent}"
         )
-        available_dates = _available_status_dates(open_all)
+        available_dates = _available_status_dates(visible_all)
         status_date = date_col.selectbox(
             "Status date", ["All Dates", *available_dates], key=f"kanban_status_date_{agent}"
         )
+        export_col.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+        export_col.download_button(
+            "⬇ RTO Converted",
+            data=_export_frame(converted_all).to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"{agent.lower()}_rto_converted_{date.today().isoformat()}.csv",
+            mime="text/csv",
+            disabled=converted_all.empty,
+            width="stretch",
+            key=f"download_rto_converted_{agent}",
+        )
 
-    board_cases = _filter_status_date(open_all, status_date)
+    board_cases = _filter_status_date(visible_all, status_date)
     if portal != "All Portals":
         board_cases = board_cases[board_cases["Portal"].astype(str).eq(portal)].copy()
+
+    board_masks = logistics_case_masks(board_cases)
     if focus == "Critical":
         board_cases = board_cases[
             board_cases.get("Priority", pd.Series("", index=board_cases.index))
@@ -737,6 +891,10 @@ def render_logistics_kanban_compact(
         board_cases = board_cases[attempts.eq(0)].copy()
     elif focus == "Follow-up due":
         board_cases = board_cases[_follow_up_due_mask(board_cases)].copy()
+    elif focus == "RTO":
+        board_cases = board_cases[board_masks["rto_open"]].copy()
+    elif focus == "RTO Converted":
+        board_cases = board_cases[board_masks["rto_converted"]].copy()
 
     if query.strip():
         needle = query.strip().casefold()
@@ -750,9 +908,11 @@ def render_logistics_kanban_compact(
 
     board_cases = _sort_latest(board_cases)
     board_cases["_kanban_stage"] = _stage_series(board_cases)
+    stage_masks = logistics_case_masks(board_cases)
+    board_cases.loc[stage_masks["rto_converted"], "_kanban_stage"] = "RTO Converted"
 
-    stage_columns = st.columns(len(BOARD_STAGES), gap="small")
-    for stage, column in zip(BOARD_STAGES, stage_columns):
+    stage_columns = st.columns(len(KANBAN_STAGES), gap="small")
+    for stage, column in zip(KANBAN_STAGES, stage_columns):
         stage_cases = board_cases[board_cases["_kanban_stage"].eq(stage)].copy()
         stage_key = _slug(stage)
         meta = STAGE_META[stage]
