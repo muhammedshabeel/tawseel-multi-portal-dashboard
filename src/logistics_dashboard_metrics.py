@@ -16,16 +16,11 @@ def _status_series(cases: pd.DataFrame, column: str) -> pd.Series:
 
 
 def tawseel_delivered_mask(cases: pd.DataFrame) -> pd.Series:
-    """Identify cases whose latest Tawseel courier status is delivered.
-
-    This is intentionally separate from logistics recovery attribution. A case
-    can be delivered by Tawseel without being credited as recovered by an agent.
-    """
+    """Identify cases whose latest Tawseel courier status is delivered."""
     if cases.empty:
         return pd.Series(False, index=cases.index, dtype=bool)
 
     status = _status_series(cases, "Latest Courier Status")
-
     negative = status.str.contains(
         r"\bnot delivered\b|\bundelivered\b|\bdelivery failed\b",
         regex=True,
@@ -48,11 +43,7 @@ def current_rto_mask(cases: pd.DataFrame) -> pd.Series:
 
 
 def rto_origin_mask(cases: pd.DataFrame) -> pd.Series:
-    """Cases that entered Logistics from an RTO or RTO Assigned status.
-
-    Previous status is included so an order that later becomes Delivered can
-    still receive accurate RTO recovery attribution.
-    """
+    """Cases that entered or previously passed through RTO/RTO Assigned."""
     if cases.empty:
         return pd.Series(False, index=cases.index, dtype=bool)
 
@@ -75,7 +66,12 @@ def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
     ).fillna("").astype(str).str.strip().str.upper().eq("YES")
     current_rto = current_rto_mask(cases)
     rto_origin = rto_origin_mask(cases)
-    rto_recovered = rto_origin & recovered
+
+    # An RTO conversion is counted only after Tawseel confirms delivery and the
+    # logistics agent closes it with recovery credit. This avoids crediting a
+    # promise, reschedule, or manually closed case as a successful conversion.
+    rto_converted = rto_origin & tawseel_delivered & recovered
+    rto_recovered = rto_converted
     rto_open = current_rto & ~closed
 
     return {
@@ -86,6 +82,7 @@ def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
         "recovered": recovered,
         "current_rto": current_rto,
         "rto_origin": rto_origin,
+        "rto_converted": rto_converted,
         "rto_recovered": rto_recovered,
         "rto_open": rto_open,
     }
@@ -98,6 +95,7 @@ def logistics_dashboard_summary(
         "Assigned": 0,
         "Active": 0,
         "RTO": 0,
+        "RTO Converted": 0,
         "Recovered from RTO": 0,
         "Tawseel Delivered": 0,
         "Delivered Pending Review": 0,
@@ -114,7 +112,8 @@ def logistics_dashboard_summary(
         "Assigned": assigned,
         "Active": int(masks["active"].sum()),
         "RTO": int(masks["current_rto"].sum()),
-        "Recovered from RTO": int(masks["rto_recovered"].sum()),
+        "RTO Converted": int(masks["rto_converted"].sum()),
+        "Recovered from RTO": int(masks["rto_converted"].sum()),
         "Tawseel Delivered": int(masks["tawseel_delivered"].sum()),
         "Delivered Pending Review": int(masks["pending_review"].sum()),
         "Closed": int(masks["closed"].sum()),
@@ -134,7 +133,8 @@ def logistics_dashboard_summary(
                 "Assigned": group_assigned,
                 "Active": int(group_masks["active"].sum()),
                 "RTO": int(group_masks["current_rto"].sum()),
-                "Recovered from RTO": int(group_masks["rto_recovered"].sum()),
+                "RTO Converted": int(group_masks["rto_converted"].sum()),
+                "Recovered from RTO": int(group_masks["rto_converted"].sum()),
                 "Tawseel Delivered": int(group_masks["tawseel_delivered"].sum()),
                 "Delivered Pending Review": int(group_masks["pending_review"].sum()),
                 "Closed": int(group_masks["closed"].sum()),
@@ -150,7 +150,7 @@ def logistics_dashboard_summary(
     summary = pd.DataFrame(rows)
     if not summary.empty:
         summary = summary.sort_values(
-            ["Recovery Rate", "Recovered from RTO", "Delivered Pending Review", "Assigned"],
+            ["Recovery Rate", "RTO Converted", "Delivered Pending Review", "Assigned"],
             ascending=[False, False, False, False],
         )
     return overall, summary
