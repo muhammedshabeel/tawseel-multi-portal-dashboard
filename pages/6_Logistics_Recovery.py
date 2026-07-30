@@ -9,7 +9,7 @@ from src.logistics import AGENTS, DEFAULT_LOGISTICS_SHEET_ID, load_activity, loa
 from src.logistics_contact_fallback import fill_missing_customer_phones
 from src.logistics_dashboard_metrics import logistics_case_masks, logistics_dashboard_summary
 from src.logistics_integrations import enrich_case_contacts, phone_display
-from src.logistics_kanban_workspace import render_logistics_kanban_workspace
+from src.logistics_kanban_compact import render_logistics_kanban_compact
 from src.logistics_reporting import (
     daily_agent_report,
     daily_case_details,
@@ -222,29 +222,14 @@ if queue_tab is not None:
                 ]
 
             columns = [
-                "Portal",
-                "AWB",
-                "Customer Name",
-                "Mobile",
-                "Latest Courier Status",
-                "Courier Remarks",
-                "Priority",
-                "Logistics Agent",
-                "Logistics Work Status",
-                "Total Call Attempts",
-                "Last Call Status",
-                "Customer Response",
-                "Next Follow-up",
+                "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
+                "Courier Remarks", "Priority", "Logistics Agent", "Logistics Work Status",
+                "Total Call Attempts", "Last Call Status", "Customer Response", "Next Follow-up",
             ]
             queue_view = active[[column for column in columns if column in active.columns]].copy()
             if "Mobile" in queue_view.columns:
                 queue_view["Mobile"] = queue_view["Mobile"].map(phone_display)
-            st.dataframe(
-                _safe_frame(queue_view),
-                width="stretch",
-                hide_index=True,
-                height=560,
-            )
+            st.dataframe(_safe_frame(queue_view), width="stretch", hide_index=True, height=560)
 
 if review_tab is not None:
     with review_tab:
@@ -256,44 +241,25 @@ if review_tab is not None:
             st.success("No delivered cases are waiting for logistics review.")
         else:
             columns = [
-                "Portal",
-                "AWB",
-                "Customer Name",
-                "Mobile",
-                "Latest Courier Status",
-                "Logistics Agent",
-                "Logistics Work Status",
-                "Last Call Status",
-                "Customer Response",
-                "Agent Remark",
-                "Tawseel Status Updated At",
+                "Portal", "AWB", "Customer Name", "Mobile", "Latest Courier Status",
+                "Logistics Agent", "Logistics Work Status", "Last Call Status",
+                "Customer Response", "Agent Remark", "Tawseel Status Updated At",
             ]
             review_view = pending[[column for column in columns if column in pending.columns]].copy()
             if "Mobile" in review_view.columns:
                 review_view["Mobile"] = review_view["Mobile"].map(phone_display)
-            st.dataframe(
-                _safe_frame(review_view),
-                width="stretch",
-                hide_index=True,
-                height=560,
-            )
+            st.dataframe(_safe_frame(review_view), width="stretch", hide_index=True, height=560)
 
 with workspace_tab:
     agent = st.selectbox("Agent", AGENTS) if identity == "MANAGER" else identity
-    render_logistics_kanban_workspace(
-        agent=agent,
-        all_cases=all_cases,
-        activity=activity,
-    )
+    render_logistics_kanban_compact(agent=agent, all_cases=all_cases, activity=activity)
 
 with report_tab:
     st.subheader("Daily Agent Report" if identity == "MANAGER" else "My Daily Report")
     report_date = st.date_input("Report Date", value=date.today(), key="daily_report_date")
     daily_report = daily_agent_report(all_cases, activity, report_date)
-
     if identity != "MANAGER":
         daily_report = daily_report[daily_report["Agent"].eq(identity)]
-
     if daily_report.empty:
         st.info("No report data available for this date.")
     else:
@@ -311,7 +277,6 @@ with report_tab:
                 )
             },
         )
-
         totals = daily_report.sum(numeric_only=True)
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("Handled Orders", int(totals.get("Handled Orders", 0)))
@@ -319,7 +284,6 @@ with report_tab:
         r3.metric("Answered Calls", int(totals.get("Answered Calls", 0)))
         r4.metric("Closed", int(totals.get("Closed", 0)))
         r5.metric("Recovered", int(totals.get("Recovered", 0)))
-
         details = daily_case_details(
             all_cases,
             activity,
@@ -332,20 +296,12 @@ with report_tab:
         else:
             if "Mobile" in details.columns:
                 details["Mobile"] = details["Mobile"].map(phone_display)
-            st.dataframe(
-                _safe_frame(details),
-                width="stretch",
-                hide_index=True,
-                height=520,
-            )
-
+            st.dataframe(_safe_frame(details), width="stretch", hide_index=True, height=520)
         if identity == "MANAGER":
             if st.button("Save Daily Report to Google Sheets", width="stretch"):
                 try:
                     saved = save_daily_report_snapshot(report_date, daily_report)
-                    st.success(
-                        f"Saved {saved} agent report rows to LOGISTICS_DAILY_REPORT."
-                    )
+                    st.success(f"Saved {saved} agent report rows to LOGISTICS_DAILY_REPORT.")
                 except Exception as exc:
                     st.error(f"Could not save daily report — {_error_text(exc)}")
 
