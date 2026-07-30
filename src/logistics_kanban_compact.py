@@ -46,113 +46,151 @@ def _inject_styles() -> None:
     st.markdown(
         """
         <style>
-        /* Native Streamlit dialog styled as a fast right-side drawer. */
-        div[data-testid="stDialog"] div[role="dialog"] {
+        /* Keep Streamlit's native outside-click and ESC dismissal, but display it as a right drawer. */
+        div[data-testid="stModal"],
+        div[data-testid="stDialog"] {
+            align-items: stretch !important;
+            justify-content: flex-end !important;
+            padding: 0 !important;
+        }
+        div[data-testid="stModal"] div[role="dialog"],
+        div[data-testid="stDialog"] div[role="dialog"],
+        div[role="dialog"][aria-modal="true"] {
             position: fixed !important;
-            top: 0.65rem !important;
-            right: 0.65rem !important;
-            bottom: 0.65rem !important;
+            top: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
             left: auto !important;
             transform: none !important;
-            width: min(430px, calc(100vw - 1.3rem)) !important;
+            width: min(430px, 100vw) !important;
+            min-width: 0 !important;
             max-width: 430px !important;
-            height: calc(100vh - 1.3rem) !important;
-            max-height: calc(100vh - 1.3rem) !important;
+            height: 100vh !important;
+            min-height: 100vh !important;
+            max-height: 100vh !important;
             margin: 0 !important;
-            border-radius: 18px !important;
+            border-radius: 18px 0 0 18px !important;
             overflow: hidden !important;
-            box-shadow: 0 28px 90px rgba(15, 23, 42, 0.34) !important;
+            box-shadow: -24px 0 70px rgba(15, 23, 42, 0.30) !important;
+            animation: lk-drawer-in 120ms ease-out !important;
         }
-        div[data-testid="stDialog"] div[role="dialog"] > div {
+        @keyframes lk-drawer-in {
+            from { transform: translateX(20px); opacity: 0.72; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        div[data-testid="stModal"] div[role="dialog"] > div,
+        div[data-testid="stDialog"] div[role="dialog"] > div,
+        div[role="dialog"][aria-modal="true"] > div {
             height: 100% !important;
             max-height: 100% !important;
             overflow-y: auto !important;
-            padding: 0.75rem 0.8rem 1rem 0.8rem !important;
+            padding: 0.72rem 0.78rem 1rem 0.78rem !important;
             scrollbar-width: thin;
         }
+        div[data-testid="stModal"] [data-testid="stDialogHeader"],
         div[data-testid="stDialog"] [data-testid="stDialogHeader"] {
             position: sticky !important;
-            top: -0.75rem !important;
+            top: -0.72rem !important;
             z-index: 30 !important;
-            margin: -0.75rem -0.8rem 0.55rem -0.8rem !important;
-            padding: 0.7rem 0.8rem 0.55rem 0.8rem !important;
+            margin: -0.72rem -0.78rem 0.5rem -0.78rem !important;
+            padding: 0.62rem 0.78rem 0.5rem 0.78rem !important;
             background: var(--background-color, #ffffff) !important;
             border-bottom: 1px solid rgba(100, 116, 139, 0.14) !important;
         }
+        div[data-testid="stModal"] h2,
         div[data-testid="stDialog"] h2 {
-            font-size: 1rem !important;
+            font-size: 0.98rem !important;
             letter-spacing: -0.02em !important;
         }
+        div[data-testid="stModal"] label,
         div[data-testid="stDialog"] label {
-            font-size: 0.72rem !important;
+            font-size: 0.71rem !important;
             font-weight: 650 !important;
         }
+        div[data-testid="stModal"] [data-testid="stForm"],
         div[data-testid="stDialog"] [data-testid="stForm"] {
             border: 0 !important;
-            padding: 0.15rem 0 0 0 !important;
+            padding: 0.08rem 0 0 0 !important;
         }
-        div[data-testid="stDialog"] [data-testid="stTabs"] button {
-            min-height: 2.15rem !important;
-            padding: 0.28rem 0.5rem !important;
-            font-size: 0.75rem !important;
-            font-weight: 680 !important;
-        }
+        div[data-testid="stModal"] textarea,
         div[data-testid="stDialog"] textarea {
-            min-height: 70px !important;
+            min-height: 66px !important;
+        }
+        div[data-testid="stModal"] [data-testid="stExpander"],
+        div[data-testid="stDialog"] [data-testid="stExpander"] {
+            margin-top: 0.45rem !important;
+            border-radius: 10px !important;
+        }
+        div[data-testid="stModal"] [data-testid="stExpander"] summary,
+        div[data-testid="stDialog"] [data-testid="stExpander"] summary {
+            min-height: 2.45rem !important;
+            font-size: 0.76rem !important;
+            font-weight: 700 !important;
         }
 
         .lk-drawer-title {
             color: #0f172a;
-            font-size: 1.08rem;
+            font-size: 1.04rem;
             line-height: 1.15;
             font-weight: 790;
             letter-spacing: -0.025em;
             overflow-wrap: anywhere;
         }
         .lk-drawer-awb {
-            margin-top: 0.12rem;
+            margin-top: 0.1rem;
             color: #64748b;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             font-weight: 620;
         }
         .lk-order-summary {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 0.42rem;
-            margin: 0.55rem 0;
+            gap: 0.38rem;
+            margin: 0.48rem 0;
         }
         .lk-summary-item {
             min-width: 0;
-            padding: 0.48rem 0.55rem;
+            padding: 0.44rem 0.5rem;
             border: 1px solid rgba(100, 116, 139, 0.12);
-            border-radius: 10px;
+            border-radius: 9px;
             background: rgba(148, 163, 184, 0.055);
         }
         .lk-summary-label {
             color: #64748b;
-            font-size: 0.62rem;
+            font-size: 0.59rem;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.045em;
         }
         .lk-summary-value {
-            margin-top: 0.12rem;
+            margin-top: 0.1rem;
             color: #0f172a;
-            font-size: 0.76rem;
-            line-height: 1.2;
+            font-size: 0.73rem;
+            line-height: 1.18;
             font-weight: 690;
             overflow-wrap: anywhere;
         }
         .lk-issue-box {
-            margin: 0 0 0.55rem 0;
-            padding: 0.5rem 0.58rem;
-            border-radius: 9px;
+            margin: 0 0 0.48rem 0;
+            padding: 0.46rem 0.54rem;
+            border-radius: 8px;
             background: rgba(245, 158, 11, 0.075);
             color: #78350f;
-            font-size: 0.73rem;
-            line-height: 1.28;
+            font-size: 0.7rem;
+            line-height: 1.25;
         }
-
+        .lk-section-title {
+            margin: 0.55rem 0 0.05rem 0;
+            color: #0f172a;
+            font-size: 0.86rem;
+            font-weight: 760;
+            letter-spacing: -0.015em;
+        }
+        .lk-section-help {
+            margin-bottom: 0.25rem;
+            color: #64748b;
+            font-size: 0.67rem;
+        }
         .lk-workspace-head { margin: 0.1rem 0 0.65rem 0; }
         .lk-workspace-title {
             font-size: 1.5rem;
@@ -413,6 +451,7 @@ def _render_quick_update(agent: str, selected: pd.Series) -> None:
     current_status = _text(selected.get("Logistics Work Status")).upper()
     status_index = WORK_STATUS_OPTIONS.index(current_status) if current_status in WORK_STATUS_OPTIONS else 0
 
+    st.markdown('<div class="lk-section-title">Update activity</div><div class="lk-section-help">Log the latest customer or courier coordination.</div>', unsafe_allow_html=True)
     with st.form(f"drawer_update_{agent}_{case_id}", clear_on_submit=True):
         action_col, status_col = st.columns(2, gap="small")
         action = action_col.selectbox(
@@ -438,8 +477,8 @@ def _render_quick_update(agent: str, selected: pd.Series) -> None:
         follow_time = time_col.time_input(
             "Next time", value=None, key=f"drawer_follow_time_{agent}_{case_id}"
         )
-        remark = st.text_area("Remark", height=70, placeholder="Add a short update...")
-        save = st.form_submit_button("Save update", type="primary", width="stretch")
+        remark = st.text_area("Remark", height=66, placeholder="Add a short update...")
+        save = st.form_submit_button("Save activity", type="primary", width="stretch")
 
     if save:
         follow_up = ""
@@ -457,7 +496,7 @@ def _render_quick_update(agent: str, selected: pd.Series) -> None:
                 next_follow_up=follow_up,
                 new_status=work_status,
             )
-            st.toast("Order updated", icon="✅")
+            st.toast("Activity saved", icon="✅")
             st.rerun()
         except Exception as exc:
             st.error(f"Could not save update — {_error_text(exc)}")
@@ -474,7 +513,7 @@ def _render_history(selected_id: str, activity: pd.DataFrame) -> None:
         case_history = case_history.sort_values("Action At", ascending=False)
     columns = ["Action At", "Action Type", "Call Result", "Customer Response", "Remark", "Next Follow-up", "New Status"]
     available = [column for column in columns if column in case_history.columns]
-    st.dataframe(case_history[available].head(20), width="stretch", hide_index=True, height=310)
+    st.dataframe(case_history[available].head(20), width="stretch", hide_index=True, height=300)
 
 
 def _render_quick_close(agent: str, selected: pd.Series) -> None:
@@ -490,9 +529,9 @@ def _render_quick_close(agent: str, selected: pd.Series) -> None:
             "Delivered date", value=None, key=f"drawer_delivered_date_{agent}_{case_id}"
         )
         closing_remark = st.text_area(
-            "Closure remark", height=70, placeholder="Reason or final coordination result..."
+            "Closure remark", height=66, placeholder="Reason or final coordination result..."
         )
-        close_clicked = st.form_submit_button("Close case", width="stretch")
+        close_clicked = st.form_submit_button("Confirm and close case", width="stretch")
 
     if close_clicked:
         try:
@@ -509,7 +548,7 @@ def _render_quick_close(agent: str, selected: pd.Series) -> None:
             st.error(f"Could not close case — {_error_text(exc)}")
 
 
-@st.dialog("Order details", width="large")
+@st.dialog("Order details", width="small")
 def _order_drawer(
     agent: str,
     case_id: str,
@@ -561,13 +600,13 @@ def _order_drawer(
         right.button("💬 DoubleTick", disabled=True, width="stretch")
         st.warning("No valid mobile number is available for this order.")
 
-    update_tab, history_tab, close_tab = st.tabs(["Update", "History", "Close"])
-    with update_tab:
-        _render_quick_update(agent, selected)
-    with history_tab:
-        _render_history(case_id, activity)
-    with close_tab:
+    _render_quick_update(agent, selected)
+
+    with st.expander("Close case", expanded=False):
         _render_quick_close(agent, selected)
+
+    with st.expander("Activity history", expanded=False):
+        _render_history(case_id, activity)
 
 
 def _render_card(
@@ -628,7 +667,7 @@ def render_logistics_kanban_compact(
         f"""
         <div class="lk-workspace-head">
             <div class="lk-workspace-title">{escape(agent.title())} Workspace</div>
-            <div class="lk-workspace-subtitle">Click an order to open it. Click outside the drawer, press ESC, or use its X to close.</div>
+            <div class="lk-workspace-subtitle">Click an order to open the right-side workspace. Click outside, press ESC, or use X to close.</div>
         </div>
         """,
         unsafe_allow_html=True,
