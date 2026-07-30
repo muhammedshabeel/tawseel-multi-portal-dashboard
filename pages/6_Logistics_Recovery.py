@@ -158,14 +158,16 @@ all_cases = _safe_frame(all_cases)
 activity = _safe_frame(activity)
 overall, agent_summary = logistics_dashboard_summary(all_cases)
 
-k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+k1, k2, k3, k4, k5, k6, k7, k8, k9 = st.columns(9)
 k1.metric("Assigned", int(overall["Assigned"]))
 k2.metric("Active", int(overall["Active"]))
-k3.metric("Tawseel Delivered", int(overall["Tawseel Delivered"]))
-k4.metric("Pending Review", int(overall["Delivered Pending Review"]))
-k5.metric("Closed", int(overall["Closed"]))
-k6.metric("Recovered", int(overall["Delivered After Coordination"]))
-k7.metric("Recovery Rate", f"{float(overall['Recovery Rate']):.1%}")
+k3.metric("RTO Assigned", int(overall["RTO Assigned"]))
+k4.metric("Recovered from RTO", int(overall["Recovered from RTO"]))
+k5.metric("Tawseel Delivered", int(overall["Tawseel Delivered"]))
+k6.metric("Pending Review", int(overall["Delivered Pending Review"]))
+k7.metric("Closed", int(overall["Closed"]))
+k8.metric("Recovered", int(overall["Delivered After Coordination"]))
+k9.metric("Recovery Rate", f"{float(overall['Recovery Rate']):.1%}")
 
 if identity == "MANAGER":
     overview_tab, queue_tab, review_tab, workspace_tab, report_tab, history_tab = st.tabs(
@@ -308,18 +310,21 @@ with workspace_tab:
     ].copy()
     assigned_masks = logistics_case_masks(assigned_all)
     active_all = _sort_latest(assigned_all[assigned_masks["active"]].copy())
+    rto_all = _sort_latest(assigned_all[assigned_masks["rto_open"]].copy())
     pending_all = _sort_latest(assigned_all[assigned_masks["pending_review"]].copy())
     open_all = _sort_latest(
         assigned_all[~assigned_masks["closed"]].copy()
     )
 
     st.subheader(f"{agent.title()} Workspace")
-    a1, a2, a3, a4, a5, a6 = st.columns(6)
+    a1, a2, a3, a4, a5, a6, a7, a8 = st.columns(8)
     a1.metric("Assigned", len(assigned_all))
     a2.metric("Active", len(active_all))
-    a3.metric("Tawseel Delivered", int(assigned_masks["tawseel_delivered"].sum()))
-    a4.metric("Pending Review", len(pending_all))
-    a5.metric(
+    a3.metric("RTO Assigned", int(assigned_masks["rto_assigned"].sum()))
+    a4.metric("Recovered from RTO", int(assigned_masks["rto_recovered"].sum()))
+    a5.metric("Tawseel Delivered", int(assigned_masks["tawseel_delivered"].sum()))
+    a6.metric("Pending Review", len(pending_all))
+    a7.metric(
         "Calls Logged",
         int(
             pd.to_numeric(
@@ -328,7 +333,7 @@ with workspace_tab:
             ).fillna(0).sum()
         ),
     )
-    a6.metric("Recovered", int(assigned_masks["recovered"].sum()))
+    a8.metric("Recovered", int(assigned_masks["recovered"].sum()))
 
     if open_all.empty:
         st.info("No open cases assigned.")
@@ -337,12 +342,14 @@ with workspace_tab:
         with view_col:
             case_view = st.selectbox(
                 "Case View",
-                ["Active Work", "Delivered Pending Review", "All Open Cases"],
-                index=0 if not active_all.empty else 1,
+                ["Active Work", "RTO Orders", "Delivered Pending Review", "All Open Cases"],
+                index=0 if not active_all.empty else (1 if not rto_all.empty else 2),
             )
 
         if case_view == "Active Work":
             view_cases = active_all.copy()
+        elif case_view == "RTO Orders":
+            view_cases = rto_all.copy()
         elif case_view == "Delivered Pending Review":
             view_cases = pending_all.copy()
         else:
