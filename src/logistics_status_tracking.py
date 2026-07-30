@@ -197,12 +197,38 @@ def sync_logistics_cases_with_status_tracking() -> dict[str, Any]:
     return result
 
 
+def _merge_status_column(
+    enriched: pd.DataFrame,
+    lookup: pd.DataFrame,
+    column: str,
+) -> pd.DataFrame:
+    """Merge one tracked status field without creating pandas _x/_y columns."""
+    tracked_column = f"__tracked_{column}"
+    source = lookup[["Case ID", column]].rename(columns={column: tracked_column})
+    enriched = enriched.merge(source, on="Case ID", how="left")
+
+    existing = enriched.get(
+        column,
+        pd.Series("", index=enriched.index, dtype=str),
+    ).fillna("").astype(str)
+    tracked_values = enriched.pop(tracked_column).fillna("").astype(str)
+    enriched[column] = tracked_values.where(tracked_values.str.strip().ne(""), existing)
+    return enriched
+
+
 def enrich_cases_with_status_updates(cases: pd.DataFrame) -> pd.DataFrame:
-    if cases.empty:
-        enriched = cases.copy()
-        for column in ["Previous Courier Status", "Tawseel Status Updated At", "Status Age Days"]:
-            if column not in enriched.columns:
-                enriched[column] = ""
+    enriched = cases.copy()
+    required_columns = [
+        "Previous Courier Status",
+        "Tawseel Status Updated At",
+        "Last Checked At",
+    ]
+    for column in required_columns:
+        if column not in enriched.columns:
+            enriched[column] = ""
+
+    if enriched.empty:
+        enriched["Status Age Days"] = ""
         return enriched
 
     try:
@@ -210,7 +236,6 @@ def enrich_cases_with_status_updates(cases: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         tracked = pd.DataFrame(columns=STATUS_HEADERS)
 
-    enriched = cases.copy()
     if not tracked.empty:
         lookup = tracked[
             [
@@ -220,16 +245,16 @@ def enrich_cases_with_status_updates(cases: pd.DataFrame) -> pd.DataFrame:
                 "Last Checked At",
             ]
         ].drop_duplicates("Case ID", keep="last")
-        enriched = enriched.merge(lookup, on="Case ID", how="left")
-    else:
-        enriched["Previous Courier Status"] = ""
-        enriched["Tawseel Status Updated At"] = ""
-        enriched["Last Checked At"] = ""
+        for column in required_columns:
+            enriched = _merge_status_column(enriched, lookup, column)
 
-    enriched["Previous Courier Status"] = enriched["Previous Courier Status"].fillna("").astype(str)
+    enriched["Previous Courier Status"] = (
+        enriched["Previous Courier Status"].fillna("").astype(str)
+    )
     enriched["Tawseel Status Updated At"] = (
         enriched["Tawseel Status Updated At"].fillna("").astype(str)
     )
+    enriched["Last Checked At"] = enriched["Last Checked At"].fillna("").astype(str)
 
     missing = enriched["Tawseel Status Updated At"].str.strip().eq("")
     if "Updated At" in enriched.columns:
