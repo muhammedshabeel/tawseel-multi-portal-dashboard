@@ -5,6 +5,13 @@ from typing import Any
 import pandas as pd
 
 
+def _status_series(cases: pd.DataFrame, column: str) -> pd.Series:
+    return cases.get(
+        column,
+        pd.Series("", index=cases.index, dtype=str),
+    ).fillna("").astype(str).str.strip().str.casefold()
+
+
 def tawseel_delivered_mask(cases: pd.DataFrame) -> pd.Series:
     """Identify cases whose latest Tawseel courier status is delivered.
 
@@ -14,9 +21,7 @@ def tawseel_delivered_mask(cases: pd.DataFrame) -> pd.Series:
     if cases.empty:
         return pd.Series(False, index=cases.index, dtype=bool)
 
-    status = cases.get(
-        "Latest Courier Status", pd.Series("", index=cases.index, dtype=str)
-    ).fillna("").astype(str).str.strip().str.casefold()
+    status = _status_series(cases, "Latest Courier Status")
 
     negative = status.str.contains(
         r"\bnot delivered\b|\bundelivered\b|\bdelivery failed\b",
@@ -32,6 +37,29 @@ def tawseel_delivered_mask(cases: pd.DataFrame) -> pd.Series:
     return positive & ~negative
 
 
+def exact_latest_rto_mask(cases: pd.DataFrame) -> pd.Series:
+    """Cases whose current Tawseel status is exactly RTO."""
+    if cases.empty:
+        return pd.Series(False, index=cases.index, dtype=bool)
+    return _status_series(cases, "Latest Courier Status").eq("rto")
+
+
+def rto_assigned_mask(cases: pd.DataFrame) -> pd.Series:
+    """Cases assigned to Logistics when their source status was exactly RTO.
+
+    Older records that do not have Source Courier Status populated fall back to
+    the latest status so historical rows remain countable without broadening the
+    definition to RTO Prepared or other related statuses.
+    """
+    if cases.empty:
+        return pd.Series(False, index=cases.index, dtype=bool)
+
+    source = _status_series(cases, "Source Courier Status")
+    latest = _status_series(cases, "Latest Courier Status")
+    effective_source = source.where(source.ne(""), latest)
+    return effective_source.eq("rto")
+
+
 def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
     index = cases.index
     closed = cases.get(
@@ -43,6 +71,10 @@ def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
     recovered = cases.get(
         "Delivered After Coordination", pd.Series("", index=index, dtype=str)
     ).fillna("").astype(str).str.strip().str.upper().eq("YES")
+    latest_rto = exact_latest_rto_mask(cases)
+    rto_assigned = rto_assigned_mask(cases)
+    rto_recovered = rto_assigned & recovered
+    rto_open = latest_rto & ~closed
 
     return {
         "closed": closed,
@@ -50,6 +82,10 @@ def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
         "pending_review": pending_review,
         "active": active,
         "recovered": recovered,
+        "latest_rto": latest_rto,
+        "rto_assigned": rto_assigned,
+        "rto_recovered": rto_recovered,
+        "rto_open": rto_open,
     }
 
 
@@ -59,6 +95,8 @@ def logistics_dashboard_summary(
     empty = {
         "Assigned": 0,
         "Active": 0,
+        "RTO Assigned": 0,
+        "Recovered from RTO": 0,
         "Tawseel Delivered": 0,
         "Delivered Pending Review": 0,
         "Closed": 0,
@@ -73,6 +111,8 @@ def logistics_dashboard_summary(
     overall = {
         "Assigned": assigned,
         "Active": int(masks["active"].sum()),
+        "RTO Assigned": int(masks["rto_assigned"].sum()),
+        "Recovered from RTO": int(masks["rto_recovered"].sum()),
         "Tawseel Delivered": int(masks["tawseel_delivered"].sum()),
         "Delivered Pending Review": int(masks["pending_review"].sum()),
         "Closed": int(masks["closed"].sum()),
@@ -91,6 +131,8 @@ def logistics_dashboard_summary(
                 "Agent": str(agent).strip() or "Unassigned",
                 "Assigned": group_assigned,
                 "Active": int(group_masks["active"].sum()),
+                "RTO Assigned": int(group_masks["rto_assigned"].sum()),
+                "Recovered from RTO": int(group_masks["rto_recovered"].sum()),
                 "Tawseel Delivered": int(group_masks["tawseel_delivered"].sum()),
                 "Delivered Pending Review": int(group_masks["pending_review"].sum()),
                 "Closed": int(group_masks["closed"].sum()),
@@ -106,7 +148,7 @@ def logistics_dashboard_summary(
     summary = pd.DataFrame(rows)
     if not summary.empty:
         summary = summary.sort_values(
-            ["Recovery Rate", "Delivered Pending Review", "Assigned"],
-            ascending=[False, False, False],
+            ["Recovery Rate", "Recovered from RTO", "Delivered Pending Review", "Assigned"],
+            ascending=[False, False, False, False],
         )
     return overall, summary
