@@ -1,0 +1,59 @@
+name: Fix Streamlit Toast Source
+
+on:
+  push:
+    paths:
+      - ".github/workflows/fix-streamlit-toast-source.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix-toast-icons:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace invalid toast icons directly
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          changed = []
+          for path in Path('.').rglob('*.py'):
+              if any(part in {'.git', '.venv', 'venv'} for part in path.parts):
+                  continue
+              original = path.read_text(encoding='utf-8')
+              updated = original.replace('icon="OK"', 'icon="✅"')
+              updated = updated.replace("icon='OK'", "icon='✅'")
+              if updated != original:
+                  path.write_text(updated, encoding='utf-8')
+                  changed.append(str(path))
+
+          print('Updated files:', changed)
+          PY
+
+      - name: Verify invalid icons are gone
+        shell: bash
+        run: |
+          if grep -R --include='*.py' -nE "icon=['\"]OK['\"]" . --exclude-dir=.git; then
+            echo "Invalid Streamlit toast icons remain."
+            exit 1
+          fi
+
+      - name: Commit direct fix
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No source changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add '*.py'
+          git commit -m "Replace invalid Streamlit toast icons directly"
+          git push
