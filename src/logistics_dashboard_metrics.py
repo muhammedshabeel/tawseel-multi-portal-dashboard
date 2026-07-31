@@ -53,6 +53,43 @@ def rto_origin_mask(cases: pd.DataFrame) -> pd.Series:
     return source.isin(RTO_STATUSES) | previous.isin(RTO_STATUSES) | latest.isin(RTO_STATUSES)
 
 
+def explicit_rto_conversion_mask(cases: pd.DataFrame) -> pd.Series:
+    """Identify cases explicitly confirmed as converted by logistics.
+
+    The save workflow closes an RTO case with final outcome ``RTO Won /
+    Converted``. That explicit outcome must move the order to the converted
+    Kanban column immediately, without waiting for a later Tawseel sync.
+    """
+    if cases.empty:
+        return pd.Series(False, index=cases.index, dtype=bool)
+
+    work_status = _status_series(cases, "Logistics Work Status")
+    final_outcome = _status_series(cases, "Logistics Final Outcome")
+
+    work_status_marked = work_status.isin(
+        {
+            "rto won / converted",
+            "rto won/converted",
+            "rto converted",
+        }
+    )
+    outcome_marked = (
+        final_outcome.isin(
+            {
+                "rto won / converted",
+                "rto won/converted",
+                "rto converted",
+            }
+        )
+        | final_outcome.str.contains(
+            r"\brto\b.*\b(?:won|converted)\b",
+            regex=True,
+            na=False,
+        )
+    )
+    return work_status_marked | outcome_marked
+
+
 def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
     index = cases.index
     closed = cases.get(
@@ -66,13 +103,19 @@ def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
     ).fillna("").astype(str).str.strip().str.upper().eq("YES")
     current_rto = current_rto_mask(cases)
     rto_origin = rto_origin_mask(cases)
+    explicit_rto_conversion = explicit_rto_conversion_mask(cases)
 
-    # An RTO conversion is counted only after Tawseel confirms delivery and the
-    # logistics agent closes it with recovery credit. This avoids crediting a
-    # promise, reschedule, or manually closed case as a successful conversion.
-    rto_converted = rto_origin & tawseel_delivered & recovered
+    # Count either of these valid conversion paths:
+    # 1. Tawseel later confirms Delivered and logistics recovery credit exists.
+    # 2. Logistics explicitly saves RTO WON / CONVERTED and recovery credit exists.
+    # The second path makes the Kanban move immediate after the agent saves.
+    rto_converted = (
+        rto_origin
+        & recovered
+        & (tawseel_delivered | explicit_rto_conversion)
+    )
     rto_recovered = rto_converted
-    rto_open = current_rto & ~closed
+    rto_open = current_rto & ~closed & ~rto_converted
 
     return {
         "closed": closed,
@@ -82,6 +125,7 @@ def logistics_case_masks(cases: pd.DataFrame) -> dict[str, pd.Series]:
         "recovered": recovered,
         "current_rto": current_rto,
         "rto_origin": rto_origin,
+        "explicit_rto_conversion": explicit_rto_conversion,
         "rto_converted": rto_converted,
         "rto_recovered": rto_recovered,
         "rto_open": rto_open,
