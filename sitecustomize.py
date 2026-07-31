@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Small runtime compatibility shim for Streamlit Cloud.
 
-Some existing UI actions use ``icon="OK"`` with ``st.toast``. Newer
+Some existing UI actions use ``icon="✅"`` with ``st.toast``. Newer
 Streamlit versions reject shortcode-like/multi-character icon values and raise
 ``StreamlitAPIException`` after the underlying save has already succeeded.
 This wrapper converts only the known invalid success tokens to a real emoji and

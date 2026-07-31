@@ -565,9 +565,9 @@ def _save_activity(
                 delivered_date=str(date.today()),
                 remark=remark or "RTO converted by logistics follow-up.",
             )
-            st.toast("RTO converted and moved to RTO Converted", icon="OK")
+            st.toast("RTO converted and moved to RTO Converted", icon="✅")
         else:
-            st.toast("Activity saved", icon="OK")
+            st.toast("Activity saved", icon="✅")
         st.rerun()
     except Exception as exc:
         st.error(f"Could not save update - {_error_text(exc)}")
@@ -669,7 +669,7 @@ def _render_close_popover(
                 delivered_date=str(delivered_date or ""),
                 remark=closing_remark,
             )
-            st.toast("Case closed", icon="OK")
+            st.toast("Case closed", icon="✅")
             st.rerun()
         except Exception as exc:
             st.error(f"Could not close case - {_error_text(exc)}")
