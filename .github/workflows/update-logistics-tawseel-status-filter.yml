@@ -1,0 +1,135 @@
+name: Update Logistics Tawseel Status Filter
+
+on:
+  push:
+    paths:
+      - ".github/workflows/update-logistics-tawseel-status-filter.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  update-filter:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace Focus filter with exact Tawseel statuses
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/logistics_kanban_compact.py')
+          content = path.read_text(encoding='utf-8')
+
+          old_select = '''        focus = focus_col.selectbox(
+            "Focus",
+            [
+                "All visible",
+                "Critical",
+                "Uncontacted",
+                "Follow-up due",
+                "RTO",
+                "RTO Converted",
+            ],
+            key=f"kanban_focus_{agent}",
+        )
+'''
+
+          new_select = '''        status_values = (
+            visible_all.get(
+                "Latest Courier Status",
+                pd.Series("", index=visible_all.index, dtype=str),
+            )
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        status_by_key: dict[str, str] = {}
+        for value in status_values.tolist():
+            if value:
+                status_by_key.setdefault(value.casefold(), value)
+        tawseel_statuses = sorted(status_by_key.values(), key=str.casefold)
+        focus = focus_col.selectbox(
+            "Tawseel status",
+            ["All Tawseel statuses", *tawseel_statuses],
+            key=f"kanban_focus_{agent}",
+        )
+'''
+
+          old_filter = '''    board_masks = logistics_case_masks(board_cases)
+    if focus == "Critical":
+        board_cases = board_cases[
+            board_cases.get("Priority", pd.Series("", index=board_cases.index))
+            .fillna("")
+            .astype(str)
+            .str.upper()
+            .str.contains("CRITICAL", regex=False)
+        ].copy()
+    elif focus == "Uncontacted":
+        attempts = pd.to_numeric(
+            board_cases.get(
+                "Total Call Attempts", pd.Series(0, index=board_cases.index)
+            ),
+            errors="coerce",
+        ).fillna(0)
+        board_cases = board_cases[attempts.eq(0)].copy()
+    elif focus == "Follow-up due":
+        board_cases = board_cases[_follow_up_due_mask(board_cases)].copy()
+    elif focus == "RTO":
+        board_cases = board_cases[
+            _mask(board_masks, "rto_open", board_cases.index)
+        ].copy()
+    elif focus == "RTO Converted":
+        board_cases = board_cases[
+            _mask(board_masks, "rto_converted", board_cases.index)
+        ].copy()
+'''
+
+          new_filter = '''    if focus != "All Tawseel statuses":
+        latest_status = board_cases.get(
+            "Latest Courier Status",
+            pd.Series("", index=board_cases.index, dtype=str),
+        ).fillna("").astype(str).str.strip()
+        board_cases = board_cases[
+            latest_status.str.casefold().eq(focus.casefold())
+        ].copy()
+'''
+
+          if old_select not in content:
+              raise SystemExit('Expected Focus selectbox block was not found.')
+          if old_filter not in content:
+              raise SystemExit('Expected Focus filtering block was not found.')
+
+          content = content.replace(old_select, new_select, 1)
+          content = content.replace(old_filter, new_filter, 1)
+          path.write_text(content, encoding='utf-8')
+          PY
+
+      - name: Verify filter behavior
+        shell: bash
+        run: |
+          grep -n 'Tawseel status' src/logistics_kanban_compact.py
+          grep -n 'All Tawseel statuses' src/logistics_kanban_compact.py
+          if grep -n '"RTO Converted",' src/logistics_kanban_compact.py | grep -q 'kanban_focus'; then
+            echo "RTO Converted still exists in the focus filter."
+            exit 1
+          fi
+          python -m py_compile src/logistics_kanban_compact.py
+
+      - name: Commit UI update
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/logistics_kanban_compact.py
+          git commit -m "Use exact Tawseel statuses in logistics filter"
+          git push
