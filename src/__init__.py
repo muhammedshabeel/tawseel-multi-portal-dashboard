@@ -6,6 +6,7 @@ workspace. These guards do not change Tawseel data or any other dashboard.
 
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 import pandas as pd
@@ -31,11 +32,13 @@ if not getattr(st.toast, "_logistics_icon_guard", False):
 
 
 # Replace the legacy Logistics "Focus" choices with the exact Tawseel courier
-# statuses present in the selected agent's assigned cases. RTO Converted remains
-# a final Kanban column and export category, not a dropdown option.
+# statuses present in the selected agent's visible cases. Kanban columns continue
+# to represent the separate Logistics work stage, so the current Tawseel status is
+# also printed on every card to avoid confusion.
 try:
     from streamlit.delta_generator import DeltaGenerator
     from src import logistics_kanban_compact as _logistics_kanban
+    from src.logistics_dashboard_metrics import logistics_case_masks
 
     _original_render = _logistics_kanban.render_logistics_kanban_compact
     _original_filter_status_date = _logistics_kanban._filter_status_date
@@ -44,7 +47,13 @@ try:
     _status_options: list[str] = []
     _selected_status: str = "All Tawseel statuses"
 
-    def _patched_selectbox(self: Any, label: str, options: Any, *args: Any, **kwargs: Any) -> Any:
+    def _patched_selectbox(
+        self: Any,
+        label: str,
+        options: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         global _selected_status
         key = str(kwargs.get("key", ""))
         if label == "Focus" and key.startswith("kanban_focus_"):
@@ -55,7 +64,10 @@ try:
             _selected_status = str(result)
         return result
 
-    def _patched_filter_status_date(cases: pd.DataFrame, status_date: str) -> pd.DataFrame:
+    def _patched_filter_status_date(
+        cases: pd.DataFrame,
+        status_date: str,
+    ) -> pd.DataFrame:
         filtered = _original_filter_status_date(cases, status_date)
         if _selected_status == "All Tawseel statuses":
             return filtered
@@ -63,7 +75,79 @@ try:
             "Latest Courier Status",
             pd.Series("", index=filtered.index, dtype=str),
         ).fillna("").astype(str).str.strip()
-        return filtered[latest.str.casefold().eq(_selected_status.casefold())].copy()
+        return filtered[
+            latest.str.casefold().eq(_selected_status.casefold())
+        ].copy()
+
+    def _patched_render_card(
+        agent: str,
+        row: pd.Series,
+        stage: str,
+        assigned_all: pd.DataFrame,
+        activity: pd.DataFrame,
+    ) -> None:
+        case_id = _logistics_kanban._text(row.get("Case ID"))
+        customer = (
+            _logistics_kanban._compact_text(row.get("Customer Name"), 25)
+            or "Unknown customer"
+        )
+        awb = _logistics_kanban._text(row.get("AWB")) or "No AWB"
+        portal = (
+            _logistics_kanban._compact_text(row.get("Portal"), 14)
+            or "Unknown portal"
+        )
+        courier_status = (
+            _logistics_kanban._compact_text(
+                row.get("Latest Courier Status"),
+                22,
+            )
+            or "Status unavailable"
+        )
+        calls = pd.to_numeric(
+            row.get("Total Call Attempts", 0),
+            errors="coerce",
+        )
+        calls = 0 if pd.isna(calls) else int(calls)
+        next_follow_up = _logistics_kanban._text(row.get("Next Follow-up"))
+
+        with st.container(
+            border=False,
+            key=(
+                f"kanban_card_{_logistics_kanban._slug(agent)}_"
+                f"{case_id}"
+            ),
+        ):
+            follow_html = ""
+            if next_follow_up and stage != "RTO Converted":
+                follow_html = (
+                    '<div class="lk-follow-chip">Next: '
+                    f'{escape(_logistics_kanban._compact_text(next_follow_up, 22))}'
+                    "</div>"
+                )
+            st.markdown(
+                f"""
+                <div class="lk-card-top">
+                    <span class="lk-badge">{escape(_logistics_kanban._priority_badge(row, stage))}</span>
+                    <span class="lk-call-chip">Calls {calls}</span>
+                </div>
+                <div class="lk-customer">{escape(customer)}</div>
+                <div class="lk-awb">AWB {escape(awb)}</div>
+                <div class="lk-card-sub">{escape(portal)} · {escape(courier_status)}</div>
+                {follow_html}
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "View" if stage == "RTO Converted" else "Open",
+                key=f"kanban_open_{agent}_{case_id}",
+                width="stretch",
+            ):
+                _logistics_kanban._order_drawer(
+                    agent,
+                    case_id,
+                    assigned_all,
+                    activity,
+                )
 
     def _patched_render_logistics_kanban_compact(
         *,
@@ -82,9 +166,25 @@ try:
             .str.upper()
             .eq(agent.upper())
         ].copy()
-        latest = assigned.get(
+
+        # Only offer statuses that can actually produce a visible Kanban card.
+        # Closed non-converted cases are intentionally excluded from the board.
+        masks = logistics_case_masks(assigned)
+        closed_mask = _logistics_kanban._mask(
+            masks,
+            "closed",
+            assigned.index,
+        )
+        converted_mask = _logistics_kanban._mask(
+            masks,
+            "rto_converted",
+            assigned.index,
+        )
+        visible = assigned[(~closed_mask) | converted_mask].copy()
+
+        latest = visible.get(
             "Latest Courier Status",
-            pd.Series("", index=assigned.index, dtype=str),
+            pd.Series("", index=visible.index, dtype=str),
         ).fillna("").astype(str).str.strip()
         status_by_key: dict[str, str] = {}
         for value in latest.tolist():
@@ -94,19 +194,33 @@ try:
 
         state_key = f"kanban_focus_{agent}"
         allowed = {"All Tawseel statuses", *_status_options}
-        current = str(st.session_state.get(state_key, "All Tawseel statuses"))
+        current = str(
+            st.session_state.get(
+                state_key,
+                "All Tawseel statuses",
+            )
+        )
         if current not in allowed:
             st.session_state[state_key] = "All Tawseel statuses"
             current = "All Tawseel statuses"
         _selected_status = current
 
-        _original_render(agent=agent, all_cases=all_cases, activity=activity)
+        _original_render(
+            agent=agent,
+            all_cases=all_cases,
+            activity=activity,
+        )
 
-    if not getattr(DeltaGenerator.selectbox, "_logistics_status_guard", False):
+    if not getattr(
+        DeltaGenerator.selectbox,
+        "_logistics_status_guard",
+        False,
+    ):
         _patched_selectbox._logistics_status_guard = True  # type: ignore[attr-defined]
         DeltaGenerator.selectbox = _patched_selectbox  # type: ignore[assignment]
 
     _logistics_kanban._filter_status_date = _patched_filter_status_date
+    _logistics_kanban._render_card = _patched_render_card
     _logistics_kanban.render_logistics_kanban_compact = (
         _patched_render_logistics_kanban_compact
     )
