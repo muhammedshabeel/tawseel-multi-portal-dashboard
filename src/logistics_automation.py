@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, TypeVar
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -36,6 +36,9 @@ HEALTH_HEADERS = [
 
 _PROCESS_LOCK = threading.Lock()
 DUBAI_TZ = ZoneInfo("Asia/Dubai")
+_HEALTH_WORKSHEET: gspread.Worksheet | None = None
+_HEALTH_CACHE: dict[str, str] = {}
+T = TypeVar("T")
 
 
 def _now_dt() -> datetime:
@@ -61,63 +64,135 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return "429" in message or "quota exceeded" in message
+
+
+def _quota_retry(
+    operation: Callable[[], T],
+    *,
+    attempts: int = 3,
+) -> T:
+    """Retry a small Google Sheets operation when a temporary 429 occurs."""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            last_error = exc
+            if not _is_quota_error(exc) or attempt >= attempts:
+                raise
+            time.sleep(5 * attempt)
+    assert last_error is not None
+    raise last_error
+
+
 def _health_sheet() -> gspread.Worksheet:
+    """Return the health worksheet while avoiding repeated metadata reads."""
+    global _HEALTH_WORKSHEET
+    if _HEALTH_WORKSHEET is not None:
+        return _HEALTH_WORKSHEET
+
     book = logistics_book()
-    try:
-        worksheet = book.worksheet(HEALTH_SHEET)
-    except gspread.WorksheetNotFound:
-        worksheet = book.add_worksheet(
-            title=HEALTH_SHEET,
-            rows=10,
-            cols=len(HEALTH_HEADERS),
-        )
-        worksheet.update("A1", [HEALTH_HEADERS])
-        worksheet.freeze(rows=1)
+
+    def resolve() -> gspread.Worksheet:
+        try:
+            worksheet = book.worksheet(HEALTH_SHEET)
+        except gspread.WorksheetNotFound:
+            worksheet = book.add_worksheet(
+                title=HEALTH_SHEET,
+                rows=10,
+                cols=len(HEALTH_HEADERS),
+            )
+            worksheet.update("A1", [HEALTH_HEADERS])
+            worksheet.freeze(rows=1)
+            return worksheet
+
+        current_headers = worksheet.row_values(1)
+        if current_headers != HEALTH_HEADERS:
+            if worksheet.col_count < len(HEALTH_HEADERS):
+                worksheet.add_cols(len(HEALTH_HEADERS) - worksheet.col_count)
+            worksheet.update("A1", [HEALTH_HEADERS])
+            worksheet.freeze(rows=1)
         return worksheet
 
-    current_headers = worksheet.row_values(1)
-    if current_headers != HEALTH_HEADERS:
-        if worksheet.col_count < len(HEALTH_HEADERS):
-            worksheet.add_cols(len(HEALTH_HEADERS) - worksheet.col_count)
-        worksheet.update("A1", [HEALTH_HEADERS])
-        worksheet.freeze(rows=1)
-    return worksheet
+    _HEALTH_WORKSHEET = _quota_retry(resolve)
+    return _HEALTH_WORKSHEET
 
 
 def read_automation_health() -> dict[str, str]:
+    global _HEALTH_CACHE
+    if _HEALTH_CACHE:
+        return dict(_HEALTH_CACHE)
+
     try:
-        values = _health_sheet().get_all_values()
-    except Exception:
+        values = _quota_retry(lambda: _health_sheet().get_all_values())
+    except Exception as exc:
+        print(f"WARNING: could not read logistics automation health: {exc}")
         return {}
     if len(values) < 2:
         return {}
-    row = list(values[1]) + [""] * max(0, len(HEALTH_HEADERS) - len(values[1]))
-    return {
+
+    row = list(values[1]) + [""] * max(
+        0,
+        len(HEALTH_HEADERS) - len(values[1]),
+    )
+    _HEALTH_CACHE = {
         header: _text(row[index])
         for index, header in enumerate(HEALTH_HEADERS)
     }
+    return dict(_HEALTH_CACHE)
 
 
 def _write_health(record: dict[str, Any]) -> None:
-    worksheet = _health_sheet()
-    current = read_automation_health()
-    merged = {**current, **{key: _text(value) for key, value in record.items()}}
+    """Write health data using the in-process cache instead of rereading it."""
+    global _HEALTH_CACHE
+    current = dict(_HEALTH_CACHE)
+    merged = {
+        **current,
+        **{key: _text(value) for key, value in record.items()},
+    }
     row = [[merged.get(header, "") for header in HEALTH_HEADERS]]
-    worksheet.update("A2", row, value_input_option="USER_ENTERED")
+    _quota_retry(
+        lambda: _health_sheet().update(
+            "A2",
+            row,
+            value_input_option="USER_ENTERED",
+        )
+    )
+    _HEALTH_CACHE = merged
+
+
+def _safe_write_health(record: dict[str, Any]) -> bool:
+    """Health reporting must never fail or repeat the actual logistics sync."""
+    try:
+        _write_health(record)
+        return True
+    except Exception as exc:
+        print(f"WARNING: could not write logistics automation health: {exc}")
+        return False
 
 
 def _is_recently_running(health: dict[str, str], lease_minutes: int) -> bool:
     if health.get("Status", "").upper() != "RUNNING":
         return False
     started = _parse_dt(health.get("Last Started At"))
-    return bool(started and _now_dt() - started < timedelta(minutes=lease_minutes))
+    return bool(
+        started
+        and _now_dt() - started < timedelta(minutes=lease_minutes)
+    )
 
 
-def _is_recent_success(health: dict[str, str], minimum_interval_seconds: int) -> bool:
+def _is_recent_success(
+    health: dict[str, str],
+    minimum_interval_seconds: int,
+) -> bool:
     success = _parse_dt(health.get("Last Success At"))
     return bool(
         success
-        and _now_dt() - success < timedelta(seconds=minimum_interval_seconds)
+        and _now_dt() - success
+        < timedelta(seconds=minimum_interval_seconds)
     )
 
 
@@ -139,7 +214,10 @@ def run_automated_sync(
     """Run an idempotent logistics sync with throttling, retries and backup."""
     with _PROCESS_LOCK:
         health = read_automation_health()
-        if not force and _is_recent_success(health, minimum_interval_seconds):
+        if not force and _is_recent_success(
+            health,
+            minimum_interval_seconds,
+        ):
             return {
                 "ran": False,
                 "skipped": "recent_success",
@@ -153,7 +231,7 @@ def run_automated_sync(
             }
 
         started_at = _now()
-        _write_health(
+        _safe_write_health(
             {
                 "Last Started At": started_at,
                 "Status": "RUNNING",
@@ -167,8 +245,10 @@ def run_automated_sync(
 
         last_error = ""
         for attempt in range(1, max_attempts + 1):
+            _safe_write_health(
+                {"Attempt": str(attempt), "Status": "RUNNING"}
+            )
             try:
-                _write_health({"Attempt": str(attempt), "Status": "RUNNING"})
                 result = sync_logistics_cases_with_status_tracking()
 
                 backup_status = "NOT_REQUIRED"
@@ -181,7 +261,8 @@ def run_automated_sync(
                     except Exception as backup_exc:
                         backup_status = "WARNING"
                         backup_error = (
-                            f"{type(backup_exc).__name__}: {str(backup_exc).strip()}"
+                            f"{type(backup_exc).__name__}: "
+                            f"{str(backup_exc).strip()}"
                         )
                         result["backup_error"] = backup_error
 
@@ -199,7 +280,10 @@ def run_automated_sync(
                     "Attempt": str(attempt),
                     "Source Orders": result.get("source_total", ""),
                     "Eligible": result.get("eligible", ""),
-                    "Matched Existing": result.get("matched_existing", ""),
+                    "Matched Existing": result.get(
+                        "matched_existing",
+                        "",
+                    ),
                     "Created": result.get("created", 0),
                     "Updated": result.get("updated", 0),
                     "Reopened": result.get("reopened", 0),
@@ -207,15 +291,30 @@ def run_automated_sync(
                     "Backup Status": backup_status,
                     "Backup Error": backup_error,
                     "Error": "",
-                    "Result JSON": json.dumps(result, sort_keys=True, default=str),
+                    "Result JSON": json.dumps(
+                        result,
+                        sort_keys=True,
+                        default=str,
+                    ),
                 }
-                _write_health(success_record)
-                return {"ran": True, **result, "attempt": attempt}
+                health_written = _safe_write_health(success_record)
+                return {
+                    "ran": True,
+                    **result,
+                    "attempt": attempt,
+                    "health_written": health_written,
+                }
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {str(exc).strip()}"
-                _write_health(
+                last_error = (
+                    f"{type(exc).__name__}: {str(exc).strip()}"
+                )
+                _safe_write_health(
                     {
-                        "Status": "RETRYING" if attempt < max_attempts else "FAILED",
+                        "Status": (
+                            "RETRYING"
+                            if attempt < max_attempts
+                            else "FAILED"
+                        ),
                         "Attempt": str(attempt),
                         "Error": last_error,
                     }
@@ -224,7 +323,7 @@ def run_automated_sync(
                     time.sleep(min(60, 5 * (2 ** (attempt - 1))))
 
         finished_at = _now()
-        _write_health(
+        _safe_write_health(
             {
                 "Last Finished At": finished_at,
                 "Status": "FAILED",
