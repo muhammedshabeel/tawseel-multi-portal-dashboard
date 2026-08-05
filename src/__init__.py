@@ -228,3 +228,57 @@ except Exception:
     # Keep the rest of the application available even if Streamlit internals
     # change. The source module remains the fallback renderer.
     pass
+
+
+# Every successful Logistics agent write is copied immediately into the
+# independent backup Google Sheet. A full-table mirror is used as a fallback if
+# the append-only case snapshot cannot be written after its built-in retries.
+try:
+    from src import logistics_kanban_compact as _backup_kanban
+    from src import logistics_kanban_workspace as _backup_workspace
+    from src.logistics_backup import backup_case_snapshot, mirror_logistics_backup
+
+    _live_add_activity = _backup_kanban.add_activity
+    _live_close_case = _backup_kanban.close_case
+
+    def _write_backup(case_id: str, event_type: str) -> None:
+        try:
+            backup_case_snapshot(case_id, event_type)
+        except Exception as snapshot_exc:
+            try:
+                mirror_logistics_backup()
+            except Exception as mirror_exc:
+                st.warning(
+                    "The Logistics update was saved, but its independent backup "
+                    "could not be confirmed. Report this immediately with the AWB. "
+                    f"Snapshot: {type(snapshot_exc).__name__}; "
+                    f"mirror: {type(mirror_exc).__name__}."
+                )
+
+    def _backed_add_activity(
+        case_id: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        _live_add_activity(case_id, *args, **kwargs)
+        _write_backup(case_id, "ACTIVITY_SAVED")
+
+    def _backed_close_case(
+        case_id: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        _live_close_case(case_id, *args, **kwargs)
+        _write_backup(case_id, "CASE_CLOSED")
+
+    if not getattr(_backup_kanban.add_activity, "_backup_guard", False):
+        _backed_add_activity._backup_guard = True  # type: ignore[attr-defined]
+        _backed_close_case._backup_guard = True  # type: ignore[attr-defined]
+        _backup_kanban.add_activity = _backed_add_activity
+        _backup_kanban.close_case = _backed_close_case
+        _backup_workspace.add_activity = _backed_add_activity
+        _backup_workspace.close_case = _backed_close_case
+except Exception:
+    # The Logistics page must remain available even if backup initialization
+    # itself encounters a temporary external-service error.
+    pass
