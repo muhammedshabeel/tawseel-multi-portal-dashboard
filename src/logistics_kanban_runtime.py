@@ -5,6 +5,10 @@ from datetime import date
 import streamlit as st
 
 from src import logistics_kanban_compact as _base
+from src.logistics_write_backup_guard import install_write_through_backup
+
+install_write_through_backup()
+
 from src.logistics import add_activity, close_case
 
 
