@@ -39,6 +39,7 @@ def main() -> int:
     _prepare_streamlit_secrets()
 
     from src.logistics_automation import run_automated_sync
+    from src.logistics_backup import mirror_logistics_backup
 
     force = os.getenv("LOGISTICS_SYNC_FORCE", "").strip().lower() in {
         "1",
@@ -54,6 +55,14 @@ def main() -> int:
         lease_minutes=int(os.getenv("LOGISTICS_SYNC_LEASE_MINUTES", "20")),
         max_attempts=int(os.getenv("LOGISTICS_SYNC_MAX_ATTEMPTS", "4")),
     )
+
+    # The automation module already mirrors when source-order data changes.
+    # When a completed sync contains no source changes, still mirror the whole
+    # Logistics workbook so agent activities, closures, settings, reports and
+    # health records are protected in the independent backup spreadsheet.
+    if result.get("ran") and not result.get("backup"):
+        result["backup"] = mirror_logistics_backup()
+
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
 
