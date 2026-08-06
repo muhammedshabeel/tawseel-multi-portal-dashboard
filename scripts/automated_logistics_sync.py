@@ -59,15 +59,11 @@ def main() -> int:
         max_attempts=int(os.getenv("LOGISTICS_SYNC_MAX_ATTEMPTS", "4")),
     )
 
-    # Always refresh the independent backup after a completed sync. This also
-    # protects agent activities and closures when Tawseel source data itself did
-    # not change during the run.
-    if result.get("ran") and not result.get("backup"):
-        result["backup"] = mirror_logistics_backup()
-
-    # A workflow run is successful only when every protected tab is confirmed
-    # to match the live Logistics workbook value for value.
+    # Always mirror again after run_automated_sync returns. The automation health
+    # row is finalized at the end of that function, so this second/final mirror
+    # captures the exact completed state before value-for-value verification.
     if result.get("ran"):
+        result["backup"] = mirror_logistics_backup()
         result["backup_verification"] = verify_logistics_backup()
 
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
