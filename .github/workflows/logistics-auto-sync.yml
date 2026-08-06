@@ -3,6 +3,13 @@ name: Logistics Auto Sync
 on:
   schedule:
     - cron: "*/10 * * * *"
+  push:
+    branches: [main]
+    paths:
+      - "src/logistics_backup.py"
+      - "src/logistics_automation.py"
+      - "scripts/automated_logistics_sync.py"
+      - ".github/workflows/logistics-auto-sync.yml"
   repository_dispatch:
     types: [tawseel-refresh-complete]
   workflow_dispatch:
@@ -30,7 +37,7 @@ jobs:
       LOGISTICS_SYNC_MIN_INTERVAL_SECONDS: "300"
       LOGISTICS_SYNC_LEASE_MINUTES: "20"
       LOGISTICS_SYNC_MAX_ATTEMPTS: "4"
-      LOGISTICS_SYNC_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.force) || github.event_name == 'repository_dispatch' }}
+      LOGISTICS_SYNC_FORCE: ${{ (github.event_name == 'workflow_dispatch' && inputs.force) || github.event_name == 'repository_dispatch' || github.event_name == 'push' }}
 
     steps:
       - name: Check out repository
@@ -53,5 +60,5 @@ jobs:
             exit 1
           fi
 
-      - name: Sync critical and updated Tawseel orders
+      - name: Sync, back up and verify Logistics data
         run: python scripts/automated_logistics_sync.py
