@@ -281,3 +281,85 @@ def mirror_logistics_backup() -> dict[str, Any]:
     )
     _retry(lambda: metadata.freeze(rows=1))
     return {"backup_tabs": copied, "backup_sheet_id": backup_book().id}
+
+
+def verify_logistics_backup() -> dict[str, Any]:
+    """Confirm that every mirrored cell exactly matches the live workbook.
+
+    This performs a value-for-value comparison of each protected Logistics tab.
+    A mismatch raises an error so the scheduled workflow cannot report success
+    while the recovery copy is incomplete.
+    """
+    live = logistics_book()
+    backup = backup_book()
+    verified: dict[str, dict[str, int | bool]] = {}
+    missing: list[str] = []
+    mismatched: list[str] = []
+
+    for title in BACKUP_TABS:
+        try:
+            source = _retry(lambda title=title: live.worksheet(title))
+        except gspread.WorksheetNotFound:
+            continue
+        try:
+            target = _retry(lambda title=title: backup.worksheet(title))
+        except gspread.WorksheetNotFound:
+            missing.append(title)
+            continue
+
+        source_values = _retry(lambda source=source: source.get_all_values())
+        target_values = _retry(lambda target=target: target.get_all_values())
+        matches = source_values == target_values
+        verified[title] = {
+            "matches": matches,
+            "live_rows": max(len(source_values) - 1, 0),
+            "backup_rows": max(len(target_values) - 1, 0),
+        }
+        if not matches:
+            mismatched.append(title)
+
+    snapshot_tabs: dict[str, bool] = {}
+    for title in [CASE_SNAPSHOT_TAB, ACTIVITY_SNAPSHOT_TAB, BACKUP_EVENT_TAB]:
+        try:
+            _retry(lambda title=title: backup.worksheet(title))
+            snapshot_tabs[title] = True
+        except gspread.WorksheetNotFound:
+            snapshot_tabs[title] = False
+
+    status = "SUCCESS" if not missing and not mismatched else "FAILED"
+    checked_at = _now()
+    metadata = _ensure_backup_tab("BACKUP_METADATA", 20, 4)
+    _retry(
+        lambda: metadata.update(
+            "A7",
+            [
+                ["Last Verification At", checked_at],
+                ["Last Verification Status", status],
+                ["Missing Tabs", ", ".join(missing)],
+                ["Mismatched Tabs", ", ".join(mismatched)],
+                [
+                    "Snapshot Tabs Ready",
+                    ", ".join(
+                        title for title, ready in snapshot_tabs.items() if ready
+                    ),
+                ],
+            ],
+            value_input_option="USER_ENTERED",
+        )
+    )
+
+    result = {
+        "status": status,
+        "checked_at": checked_at,
+        "verified_tabs": verified,
+        "missing_tabs": missing,
+        "mismatched_tabs": mismatched,
+        "snapshot_tabs": snapshot_tabs,
+        "backup_sheet_id": backup.id,
+    }
+    if status != "SUCCESS":
+        raise RuntimeError(
+            "Logistics backup verification failed: "
+            f"missing={missing}, mismatched={mismatched}"
+        )
+    return result
