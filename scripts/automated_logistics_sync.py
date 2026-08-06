@@ -39,7 +39,10 @@ def main() -> int:
     _prepare_streamlit_secrets()
 
     from src.logistics_automation import run_automated_sync
-    from src.logistics_backup import mirror_logistics_backup
+    from src.logistics_backup import (
+        mirror_logistics_backup,
+        verify_logistics_backup,
+    )
 
     force = os.getenv("LOGISTICS_SYNC_FORCE", "").strip().lower() in {
         "1",
@@ -56,12 +59,16 @@ def main() -> int:
         max_attempts=int(os.getenv("LOGISTICS_SYNC_MAX_ATTEMPTS", "4")),
     )
 
-    # The automation module already mirrors when source-order data changes.
-    # When a completed sync contains no source changes, still mirror the whole
-    # Logistics workbook so agent activities, closures, settings, reports and
-    # health records are protected in the independent backup spreadsheet.
+    # Always refresh the independent backup after a completed sync. This also
+    # protects agent activities and closures when Tawseel source data itself did
+    # not change during the run.
     if result.get("ran") and not result.get("backup"):
         result["backup"] = mirror_logistics_backup()
+
+    # A workflow run is successful only when every protected tab is confirmed
+    # to match the live Logistics workbook value for value.
+    if result.get("ran"):
+        result["backup_verification"] = verify_logistics_backup()
 
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
