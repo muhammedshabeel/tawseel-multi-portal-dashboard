@@ -72,6 +72,25 @@ def _status_datetimes(df: pd.DataFrame) -> pd.Series:
     )
 
 
+def _global_filter_dates(df: pd.DataFrame) -> tuple[pd.Series, str]:
+    """Return the best available case date series for the global date filter."""
+    candidates = (
+        ("Tawseel Status Updated At", "Tawseel status date"),
+        ("Assigned At", "Assigned date"),
+    )
+    for column, label in candidates:
+        if column not in df.columns:
+            continue
+        values = pd.to_datetime(
+            df[column],
+            errors="coerce",
+            format="mixed",
+        )
+        if values.notna().any():
+            return values, label
+    return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]"), "Case date"
+
+
 def _sort_latest(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
@@ -89,8 +108,6 @@ def _sort_latest(df: pd.DataFrame) -> pd.DataFrame:
         na_position="last",
     ).drop(columns=["_status_sort", "_priority_sort"], errors="ignore")
 
-
-st.title("🚚 Logistics Recovery")
 
 with st.sidebar:
     st.subheader("Workspace")
@@ -130,6 +147,81 @@ with st.spinner("Loading logistics workspace..."):
         with st.expander("Technical details"):
             st.code(repr(exc))
         st.stop()
+
+filter_dates, filter_date_label = _global_filter_dates(all_cases)
+valid_filter_dates = filter_dates.dropna()
+date_filter_enabled = not valid_filter_dates.empty
+
+header_left, header_right = st.columns(
+    [3.25, 1.2],
+    gap="large",
+    vertical_alignment="bottom",
+)
+with header_left:
+    st.title("🚚 Logistics Recovery")
+
+with header_right:
+    filter_options = ["All dates", "Custom range"] if date_filter_enabled else ["All dates"]
+    date_filter_mode = st.selectbox(
+        "Date filter",
+        filter_options,
+        key="logistics_global_date_filter_mode",
+        help=(
+            f"Filters this Logistics Recovery page by {filter_date_label.lower()}. "
+            "All metrics, queues, workspaces, and reports below use the selected period."
+        ),
+    )
+
+    filter_start = filter_end = None
+    if date_filter_mode == "Custom range" and date_filter_enabled:
+        minimum_date = valid_filter_dates.min().normalize()
+        maximum_date = valid_filter_dates.max().normalize()
+        selected_range = st.date_input(
+            "Custom date range",
+            value=(minimum_date.date(), maximum_date.date()),
+            min_value=minimum_date.date(),
+            max_value=maximum_date.date(),
+            key="logistics_global_custom_date_range",
+        )
+        if isinstance(selected_range, (tuple, list)) and len(selected_range) == 2:
+            filter_start = pd.Timestamp(selected_range[0]).normalize()
+            filter_end = pd.Timestamp(selected_range[1]).normalize()
+        else:
+            selected_date = (
+                selected_range[0]
+                if isinstance(selected_range, (tuple, list))
+                else selected_range
+            )
+            filter_start = pd.Timestamp(selected_date).normalize()
+            filter_end = filter_start
+
+        if filter_start > filter_end:
+            filter_start, filter_end = filter_end, filter_start
+
+        normalized_filter_dates = filter_dates.dt.normalize()
+        period_mask = normalized_filter_dates.between(
+            filter_start,
+            filter_end,
+            inclusive="both",
+        )
+        all_cases = all_cases[period_mask.fillna(False)].copy()
+
+        if not activity.empty and "Case ID" in activity.columns and "Case ID" in all_cases.columns:
+            visible_case_ids = set(all_cases["Case ID"].fillna("").astype(str))
+            activity = activity[
+                activity["Case ID"].fillna("").astype(str).isin(visible_case_ids)
+            ].copy()
+
+        st.caption(
+            f"{filter_date_label}: {filter_start:%d %b %Y} – {filter_end:%d %b %Y}"
+        )
+    elif date_filter_enabled:
+        st.caption(
+            f"All {filter_date_label.lower()}s • "
+            f"{valid_filter_dates.min():%d %b %Y} – {valid_filter_dates.max():%d %b %Y}"
+        )
+    else:
+        st.caption("No valid case dates available")
 
 all_cases = _safe_frame(all_cases)
 activity = _safe_frame(activity)
