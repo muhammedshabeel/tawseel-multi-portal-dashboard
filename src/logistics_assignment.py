@@ -6,15 +6,15 @@ from typing import Any
 
 import pandas as pd
 
-ASSIGNMENT_POLICY_VERSION = "2026-07-30-v1"
+ASSIGNMENT_POLICY_VERSION = "2026-09-19-equal-from-sep1-v1"
 ASSIGNMENT_WEIGHTS: dict[str, float] = {
-    "VAISHAKH": 0.15,
-    "NEETHU": 0.15,
-    "HASBIR": 0.35,
-    "AKHASH": 0.35,
+    "VAISHAKH": 0.25,
+    "NEETHU": 0.25,
+    "HASBIR": 0.25,
+    "AKHASH": 0.25,
 }
 ASSIGNMENT_ORDER = ["HASBIR", "AKHASH", "VAISHAKH", "NEETHU"]
-ASSIGNMENT_METHOD = "WEIGHTED_30_70"
+ASSIGNMENT_METHOD = "EQUAL_FROM_2026_09_01"
 
 
 def _text(value: Any) -> str:
@@ -73,7 +73,7 @@ def weighted_assignments(
     count: int,
     current_counts: dict[str, int] | None = None,
 ) -> list[str]:
-    """Assign new cases to the largest deficit against the 15/15/35/35 target."""
+    """Assign new cases to the largest deficit against the equal 25/25/25/25 target."""
     counts = {
         agent: int((current_counts or {}).get(agent, 0))
         for agent in ASSIGNMENT_WEIGHTS
@@ -236,9 +236,9 @@ def plan_safe_rebalance(
 
 
 def apply_weighted_assignment_policy() -> dict[str, Any]:
-    """Apply the requested 30/70 policy to current safe cases and future batches.
+    """Apply the equal assignment policy to current safe cases and future batches.
 
-    Vaishakh and Neethu receive 15% each. Hasbir and Akash receive 35% each.
+    Each logistics agent receives 25% of the assignment cohort.
     Existing cases with any agent work or audit activity stay with their current
     owner. Untouched active cases are redistributed, and every change is logged.
     """
