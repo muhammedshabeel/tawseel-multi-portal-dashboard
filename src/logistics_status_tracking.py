@@ -120,7 +120,7 @@ def _write_status_updates(statuses: pd.DataFrame) -> None:
 
 
 def sync_logistics_cases_with_status_tracking() -> dict[str, Any]:
-    """Run isolated sync, contact correction, reactivation and exact weighted assignment."""
+    """Run isolated sync, contact correction, reactivation and equal Sep-1+ assignment."""
     before = load_cases()
     before_status = {
         _text(row.get("Case ID")): _text(row.get("Latest Courier Status"))
