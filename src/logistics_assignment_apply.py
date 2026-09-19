@@ -105,95 +105,167 @@ def _normalise_needed(
     return needed
 
 
-def rebalance_logistics_assignments() -> dict[str, Any]:
-    """Make current ownership match the exact 15/15/35/35 assignment policy.
+def _equal_assignment_cohort(
+    cases: pd.DataFrame,
+    start_date: str = "2026-09-01",
+) -> pd.DataFrame:
+    """Return every Logistics Recovery case dated on/after the configured start date.
 
-    Delivered and closed cases remain with their historical owner. All live cases
-    are allocated around those locked cases so the overall Assigned totals match
-    the requested ratio whenever mathematically possible. Worked cases are kept
-    with their current owner first; untouched cases move before worked cases.
-    Every ownership change is appended to the logistics activity audit log.
+    The dashboard's tracked Tawseel status date is the primary date so the
+    assignment cohort matches the top-right Logistics Recovery date filter.
+    New cases that do not yet have a tracked status row fall back to Scheduled
+    Date, Assigned At, then Created At.
+    """
+    if cases.empty:
+        return cases.copy()
+
+    work = cases.copy()
+    tracked_dates = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns]")
+
+    try:
+        # Lazy import avoids a module-level circular dependency because
+        # logistics_status_tracking imports this module for the rebalance call.
+        from src.logistics_status_tracking import load_status_updates
+
+        tracked = load_status_updates()
+        if not tracked.empty and "Case ID" in tracked.columns:
+            latest = tracked.drop_duplicates("Case ID", keep="last").set_index("Case ID")
+            mapped = work.get(
+                "Case ID",
+                pd.Series("", index=work.index, dtype=str),
+            ).fillna("").astype(str).map(latest.get("Tawseel Status Updated At"))
+            tracked_dates = pd.to_datetime(
+                mapped,
+                errors="coerce",
+                format="mixed",
+            )
+    except Exception:
+        pass
+
+    effective_dates = tracked_dates.copy()
+    for column in ("Scheduled Date", "Assigned At", "Created At"):
+        if column not in work.columns:
+            continue
+        fallback = pd.to_datetime(
+            work[column],
+            errors="coerce",
+            format="mixed",
+            dayfirst=True,
+        )
+        effective_dates = effective_dates.fillna(fallback)
+
+    cutoff = pd.Timestamp(start_date).normalize()
+    mask = effective_dates.dt.normalize().ge(cutoff).fillna(False)
+    return work[mask].copy()
+
+
+def rebalance_logistics_assignments() -> dict[str, Any]:
+    """Equalize all Logistics Recovery cases dated 01 Sep 2026 onward.
+
+    Every case in the cohort is eligible, including worked, delivered, and
+    closed cases, because the requested ownership reset applies to all Logistics
+    Recovery data from 01 Sep 2026 forward. Earlier cases are never changed.
+
+    The split is mathematically exact whenever the cohort total is divisible by
+    four. When it is not, integer targets differ by at most one case. Existing
+    owners are retained where possible to minimize unnecessary reassignment.
+    Every ownership change is appended to the audit log.
     """
     cases = load_cases()
-    activity = load_activity()
     if cases.empty:
+        zero = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
         return {
             "assignment_policy": ASSIGNMENT_METHOD,
             "assignment_policy_version": ASSIGNMENT_POLICY_VERSION,
+            "assignment_scope_start": "2026-09-01",
             "reassigned": 0,
             "assignment_updated": 0,
-            "assignment_targets": target_counts(0),
-            "assignment_after": assignment_counts(cases),
+            "assignment_targets": zero,
+            "assignment_after": zero,
+            "assignment_exact": True,
         }
 
-    active = active_assignment_cases(cases)
-    locked = cases.drop(index=active.index)
-    targets = target_counts(len(cases))
-    locked_counts = assignment_counts(locked)
-    needed = _normalise_needed(targets, locked_counts, len(active))
-
-    activity_case_ids = set()
-    if not activity.empty and "Case ID" in activity.columns:
-        activity_case_ids = {
-            _text(value) for value in activity["Case ID"].tolist() if _text(value)
+    cohort = _equal_assignment_cohort(cases, "2026-09-01")
+    if cohort.empty:
+        zero = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
+        return {
+            "assignment_policy": ASSIGNMENT_METHOD,
+            "assignment_policy_version": ASSIGNMENT_POLICY_VERSION,
+            "assignment_scope_start": "2026-09-01",
+            "reassigned": 0,
+            "assignment_updated": 0,
+            "assignment_targets": zero,
+            "assignment_after": zero,
+            "assignment_exact": True,
         }
 
-    work = active.copy()
-    attempts = pd.to_numeric(
-        work.get("Total Call Attempts", pd.Series(0, index=work.index)),
-        errors="coerce",
-    ).fillna(0)
-    work["_worked"] = attempts.gt(0) | work["Case ID"].map(_text).isin(activity_case_ids)
+    targets = target_counts(len(cohort))
+
+    work = cohort.copy()
     work["_assigned_dt"] = pd.to_datetime(
         work.get("Assigned At", pd.Series("", index=work.index)),
         errors="coerce",
         format="mixed",
     )
 
+    # Keep as many current assignments as each equal target allows. Older
+    # ownership is retained first, which minimizes changes while still reaching
+    # the exact target distribution.
     keep_indexes: set[int] = set()
     kept_by_agent: dict[str, int] = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
     for agent in ASSIGNMENT_ORDER:
         group = work[
-            work["Logistics Agent"].fillna("").astype(str).str.strip().str.upper().eq(agent)
+            work["Logistics Agent"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .eq(agent)
         ].copy()
         if group.empty:
             continue
         group = group.sort_values(
-            ["_worked", "_assigned_dt", "Case ID"],
-            ascending=[False, True, True],
+            ["_assigned_dt", "Case ID"],
+            ascending=[True, True],
             na_position="last",
         )
-        indexes = group.index.tolist()[: needed[agent]]
+        indexes = group.index.tolist()[: targets[agent]]
         keep_indexes.update(indexes)
         kept_by_agent[agent] = len(indexes)
 
-    overflow = work.loc[[index for index in work.index if index not in keep_indexes]].copy()
+    overflow = work.loc[
+        [index for index in work.index if index not in keep_indexes]
+    ].copy()
     if not overflow.empty:
         overflow = overflow.sort_values(
-            ["_worked", "_assigned_dt", "Case ID"],
-            ascending=[True, True, True],
+            ["_assigned_dt", "Case ID"],
+            ascending=[True, True],
             na_position="last",
         )
 
     destinations: list[str] = []
     for agent in ASSIGNMENT_ORDER:
-        destinations.extend([agent] * max(needed[agent] - kept_by_agent[agent], 0))
+        destinations.extend(
+            [agent] * max(targets[agent] - kept_by_agent[agent], 0)
+        )
 
     if len(destinations) != len(overflow):
         raise RuntimeError(
-            "Weighted assignment planning mismatch: "
+            "Equal assignment planning mismatch: "
             f"{len(destinations)} destinations for {len(overflow)} cases"
         )
 
     planned_agent = {
-        index: agent for index, agent in zip(overflow.index.tolist(), destinations)
+        index: agent
+        for index, agent in zip(overflow.index.tolist(), destinations)
     }
+
     now = _now()
     row_updates: list[tuple[int, list[str]]] = []
     activity_rows: list[list[str]] = []
     reassigned = 0
 
-    for index in active.index:
+    for index in cohort.index:
         current = cases.loc[index].to_dict()
         old_agent = _text(current.get("Logistics Agent")).upper()
         new_agent = planned_agent.get(index, old_agent)
@@ -208,6 +280,7 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
             current["Logistics Agent"] = new_agent
             current["Updated At"] = now
             reassigned += 1
+
             activity_id = hashlib.sha256(
                 f"{current.get('Case ID')}|{now}|REASSIGN|{old_agent}|{new_agent}".encode(
                     "utf-8"
@@ -226,7 +299,7 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
                 "Customer Response": "",
                 "Remark": (
                     f"Assignment changed from {old_agent or 'UNASSIGNED'} to {new_agent} "
-                    f"under {ASSIGNMENT_METHOD} policy"
+                    "under equal Logistics Recovery policy from 01 Sep 2026"
                 ),
                 "Next Follow-up": current.get("Next Follow-up", ""),
                 "Previous Work Status": current.get("Logistics Work Status", ""),
@@ -234,7 +307,9 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
             }
             activity_rows.append(_row_values(activity_record, ACTIVITY_HEADERS))
 
-        row_updates.append((int(index) + 2, _row_values(current, CASE_HEADERS)))
+        row_updates.append(
+            (int(index) + 2, _row_values(current, CASE_HEADERS))
+        )
 
     book = logistics_book()
     _batch_update_rows(
@@ -250,10 +325,14 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
 
     _clear_table_cache()
     refreshed = load_cases()
-    after = assignment_counts(refreshed)
+    refreshed_cohort = _equal_assignment_cohort(refreshed, "2026-09-01")
+    after = assignment_counts(refreshed_cohort)
+
     return {
         "assignment_policy": ASSIGNMENT_METHOD,
         "assignment_policy_version": ASSIGNMENT_POLICY_VERSION,
+        "assignment_scope_start": "2026-09-01",
+        "assignment_scope_total": len(refreshed_cohort),
         "reassigned": reassigned,
         "assignment_updated": len(row_updates),
         "assignment_targets": targets,
