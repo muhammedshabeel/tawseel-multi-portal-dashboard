@@ -85,7 +85,7 @@ def _status_sheet() -> gspread.Worksheet:
     return worksheet
 
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_status_updates() -> pd.DataFrame:
     try:
         values = _status_sheet().get_all_values()

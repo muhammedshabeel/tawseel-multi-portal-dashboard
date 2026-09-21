@@ -53,7 +53,7 @@ def _cell(row: list[Any], index: int | None) -> str:
     return _text(row[index])
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _load_portal_awb_contacts() -> dict[tuple[str, str], dict[str, str]]:
     """Read exact AWB contacts from each configured portal input tab.
 
@@ -118,7 +118,7 @@ def _load_portal_awb_contacts() -> dict[tuple[str, str], dict[str, str]]:
     return contacts
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _load_name_phone_map() -> dict[str, str]:
     client = get_gspread_client()
     candidates: dict[str, set[str]] = {}
@@ -172,8 +172,16 @@ def fill_missing_customer_phones(cases: pd.DataFrame) -> pd.DataFrame:
     if cases.empty:
         return cases
 
-    portal_contacts = _load_portal_awb_contacts()
-    directory = _load_name_phone_map()
+    # Contact enrichment is best-effort. A temporary Google Sheets quota issue
+    # must never take down the Logistics Recovery workspace.
+    try:
+        portal_contacts = _load_portal_awb_contacts()
+    except Exception:
+        portal_contacts = {}
+    try:
+        directory = _load_name_phone_map()
+    except Exception:
+        directory = {}
     enriched = cases.copy()
 
     for index, row in enriched.iterrows():

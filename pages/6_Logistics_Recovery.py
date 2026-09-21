@@ -123,7 +123,6 @@ if sync_clicked:
                 f"Sync completed: {result['created']} new, {result['updated']} refreshed, "
                 f"{result.get('status_changed', 0)} status changes detected."
             )
-            st.cache_data.clear()
             st.rerun()
         except Exception as exc:
             st.error(f"Sync failed — {_error_text(exc)}")

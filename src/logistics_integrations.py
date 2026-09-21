@@ -120,7 +120,7 @@ def _contact_config() -> dict[str, Any]:
     return config
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _load_awb_contacts() -> dict[tuple[str, str], dict[str, str]]:
     config = _contact_config()
     client = get_gspread_client()
@@ -167,7 +167,7 @@ def _load_awb_contacts() -> dict[tuple[str, str], dict[str, str]]:
     return contacts
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _load_portal_master_contacts() -> dict[tuple[str, str], dict[str, str]]:
     """Best-effort fallback using complete portal rows; logistics-only read."""
     client = get_gspread_client()
@@ -249,7 +249,7 @@ def _customer_directory_config() -> dict[str, Any]:
     return config
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _load_name_directory() -> dict[str, str]:
     config = _customer_directory_config()
     client = get_gspread_client()
@@ -351,7 +351,7 @@ def _secret_value(*keys: str) -> str:
     return ""
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_doubletick_embed_url(phone: str) -> str:
     normalized = normalize_phone(phone)
     if not normalized:
