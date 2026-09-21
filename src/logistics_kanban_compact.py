@@ -1152,7 +1152,6 @@ def _render_delivered_review_bulk(
                 except Exception:
                     failed.append(case_id)
 
-            st.cache_data.clear()
             if failed:
                 st.warning(
                     f"Updated {updated} order(s); {len(failed)} could not be updated."
@@ -1212,7 +1211,6 @@ def _render_manual_add(agent: str) -> None:
                     priority=priority,
                 )
                 st.toast("Manual recovery case added", icon="✅")
-                st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not add case - {_error_text(exc)}")
