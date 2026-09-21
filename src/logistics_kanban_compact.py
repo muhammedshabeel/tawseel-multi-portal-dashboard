@@ -966,12 +966,192 @@ def _render_card(
             """,
             unsafe_allow_html=True,
         )
+        if stage == "Delivered Review":
+            st.checkbox(
+                "Select",
+                key=_delivered_select_key(agent, case_id),
+            )
         if st.button(
             "View" if stage == "RTO Converted" else "Open",
             key=f"kanban_open_{agent}_{case_id}",
             width="stretch",
         ):
             _order_drawer(agent, case_id, assigned_all, activity)
+
+
+def _delivered_select_key(agent: str, case_id: str) -> str:
+    return f"delivered_review_select_{_slug(agent)}_{case_id}"
+
+
+def _selected_delivered_review_ids(
+    agent: str,
+    stage_cases: pd.DataFrame,
+) -> list[str]:
+    selected: list[str] = []
+    for _, row in stage_cases.iterrows():
+        case_id = _text(row.get("Case ID"))
+        if case_id and bool(st.session_state.get(_delivered_select_key(agent, case_id), False)):
+            selected.append(case_id)
+    return selected
+
+
+def _set_delivered_review_selection(
+    agent: str,
+    stage_cases: pd.DataFrame,
+    selected: bool,
+) -> None:
+    for _, row in stage_cases.iterrows():
+        case_id = _text(row.get("Case ID"))
+        if case_id:
+            st.session_state[_delivered_select_key(agent, case_id)] = selected
+
+
+def _render_delivered_review_bulk(
+    agent: str,
+    stage_cases: pd.DataFrame,
+) -> None:
+    """Bulk-select and update currently visible Delivered Review cards."""
+    if stage_cases.empty:
+        return
+
+    selected_ids = _selected_delivered_review_ids(agent, stage_cases)
+    select_col, clear_col = st.columns(2, gap="small")
+    if select_col.button(
+        "Select all",
+        key=f"delivered_review_select_all_{_slug(agent)}",
+        width="stretch",
+    ):
+        _set_delivered_review_selection(agent, stage_cases, True)
+        st.rerun()
+    if clear_col.button(
+        "Clear",
+        key=f"delivered_review_clear_{_slug(agent)}",
+        width="stretch",
+    ):
+        _set_delivered_review_selection(agent, stage_cases, False)
+        st.rerun()
+
+    selected_ids = _selected_delivered_review_ids(agent, stage_cases)
+    with st.popover(
+        f"Bulk update ({len(selected_ids)})",
+        width="stretch",
+    ):
+        if not selected_ids:
+            st.info("Select one or more Delivered Review cards first.")
+            return
+
+        st.caption(f"{len(selected_ids)} selected order(s)")
+        with st.form(
+            f"delivered_review_bulk_form_{_slug(agent)}",
+            clear_on_submit=False,
+        ):
+            work_status = st.selectbox(
+                "Work status",
+                [
+                    "Keep current",
+                    "IN PROGRESS",
+                    "FOLLOW-UP DUE",
+                    "CUSTOMER CONTACTED",
+                    "RESCHEDULED",
+                    "AWAITING COURIER",
+                    "ESCALATED",
+                    "UNRESOLVED",
+                ],
+            )
+            customer_response = st.selectbox(
+                "Customer response",
+                [
+                    "Keep current",
+                    "Will Receive",
+                    "Requested Reschedule",
+                    "Customer Unavailable",
+                    "Location Changed",
+                    "Payment Issue",
+                    "Not Interested",
+                    "Order Cancelled",
+                    "Already Delivered",
+                    "Other",
+                ],
+            )
+            remark = st.text_area(
+                "Remark",
+                height=70,
+                placeholder="Optional note to apply to all selected orders...",
+            )
+            close_selected = st.checkbox(
+                "Close selected cases after update",
+                value=False,
+            )
+            final_outcome = "Delivered - No Recovery Credit"
+            recovered = False
+            if close_selected:
+                final_outcome = st.selectbox(
+                    "Final outcome",
+                    [
+                        "Delivered - No Recovery Credit",
+                        "Delivered After Logistics Follow-up",
+                        "Rescheduled",
+                        "Customer Cancelled",
+                        "Confirmed RTO",
+                        "Back to Store",
+                        "Invalid Customer",
+                        "Duplicate",
+                        "Unresolved",
+                        "Escalated",
+                    ],
+                )
+                recovered = st.checkbox(
+                    "Delivered after logistics coordination",
+                    value=(final_outcome == "Delivered After Logistics Follow-up"),
+                )
+
+            apply_bulk = st.form_submit_button(
+                "Apply to selected",
+                type="primary",
+                width="stretch",
+            )
+
+        if apply_bulk:
+            updated = 0
+            failed: list[str] = []
+            for case_id in selected_ids:
+                try:
+                    new_status = "" if work_status == "Keep current" else work_status
+                    response = (
+                        ""
+                        if customer_response == "Keep current"
+                        else customer_response
+                    )
+                    add_activity(
+                        case_id,
+                        action_type="NOTE",
+                        call_result="",
+                        customer_response=response,
+                        remark=remark,
+                        next_follow_up="",
+                        new_status=new_status,
+                    )
+                    if close_selected:
+                        close_case(
+                            case_id,
+                            outcome=final_outcome,
+                            delivered_after_coordination=recovered,
+                            delivered_date=str(date.today()) if recovered else "",
+                            remark=remark,
+                        )
+                    updated += 1
+                    st.session_state[_delivered_select_key(agent, case_id)] = False
+                except Exception:
+                    failed.append(case_id)
+
+            st.cache_data.clear()
+            if failed:
+                st.warning(
+                    f"Updated {updated} order(s); {len(failed)} could not be updated."
+                )
+            else:
+                st.toast(f"Updated {updated} Delivered Review order(s)", icon="✅")
+            st.rerun()
 
 
 def _render_manual_add(agent: str) -> None:
@@ -1228,6 +1408,8 @@ def render_logistics_kanban_compact(
             )
             if stage == "New":
                 _render_manual_add(agent)
+            elif stage == "Delivered Review":
+                _render_delivered_review_bulk(agent, stage_cases)
             with st.container(
                 height=640,
                 border=False,
