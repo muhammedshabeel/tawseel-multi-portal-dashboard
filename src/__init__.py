@@ -103,6 +103,13 @@ try:
             )
             or "Status unavailable"
         )
+        work_status = (
+            _logistics_kanban._compact_text(
+                row.get("Logistics Work Status"),
+                22,
+            )
+            or "NEW"
+        )
         calls = pd.to_numeric(
             row.get("Total Call Attempts", 0),
             errors="coerce",
@@ -132,7 +139,8 @@ try:
                 </div>
                 <div class="lk-customer">{escape(customer)}</div>
                 <div class="lk-awb">AWB {escape(awb)}</div>
-                <div class="lk-card-sub">{escape(portal)} · {escape(courier_status)}</div>
+                <div class="lk-card-sub">{escape(portal)} · Tawseel: {escape(courier_status)}</div>
+                <div class="lk-card-sub">Work: {escape(work_status)}</div>
                 {follow_html}
                 """,
                 unsafe_allow_html=True,
