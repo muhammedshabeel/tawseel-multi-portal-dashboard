@@ -160,13 +160,11 @@ def _equal_assignment_cohort(
 
 
 def rebalance_logistics_assignments() -> dict[str, Any]:
-    """Balance Sep-1+ Logistics Recovery data across all six agents safely.
+    """Balance every Sep-1+ Logistics Recovery case across all six agents.
 
-    Cases with genuine agent work are locked to their existing owner and are
-    never reassigned. Untouched cases dated 01 Sep 2026 onward are redistributed
-    around those locked cases to make the six-agent totals as even as possible.
-    REASSIGN audit rows created by earlier balancing runs do not count as agent
-    work. Earlier cases are never changed.
+    Worked, delivered, and closed cases are included in the equal split.
+    Earlier cases remain untouched in storage and are excluded from the agent
+    assignment cohort.
     """
     cases = load_cases()
     if cases.empty:
@@ -306,8 +304,8 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
                 "Call Result": "",
                 "Customer Response": "",
                 "Remark": (
-                    f"Untouched case balanced from {old_agent or 'UNASSIGNED'} to {new_agent} "
-                    "under equal six-agent policy from 01 Sep 2026"
+                    f"Sep-1+ equal split changed assignment from "
+                    f"{old_agent or 'UNASSIGNED'} to {new_agent}"
                 ),
                 "Next Follow-up": current.get("Next Follow-up", ""),
                 "Previous Work Status": current.get("Logistics Work Status", ""),
