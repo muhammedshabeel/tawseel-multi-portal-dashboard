@@ -865,6 +865,7 @@ def _render_card(
     customer = _compact_text(row.get("Customer Name"), 25) or "Unknown customer"
     awb = _text(row.get("AWB")) or "No AWB"
     portal = _compact_text(row.get("Portal"), 16) or "Unknown portal"
+    work_status = _compact_text(row.get("Logistics Work Status"), 22) or "NEW"
     calls = pd.to_numeric(row.get("Total Call Attempts", 0), errors="coerce")
     calls = 0 if pd.isna(calls) else int(calls)
     next_follow_up = _text(row.get("Next Follow-up"))
@@ -884,7 +885,7 @@ def _render_card(
             </div>
             <div class="lk-customer">{escape(customer)}</div>
             <div class="lk-awb">AWB {escape(awb)}</div>
-            <div class="lk-card-sub">{escape(portal)}</div>
+            <div class="lk-card-sub">{escape(portal)} · Work: {escape(work_status)}</div>
             {follow_html}
             """,
             unsafe_allow_html=True,

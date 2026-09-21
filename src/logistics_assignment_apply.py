@@ -160,16 +160,13 @@ def _equal_assignment_cohort(
 
 
 def rebalance_logistics_assignments() -> dict[str, Any]:
-    """Balance Sep-1+ Logistics Recovery data across all six agents safely.
+    """Balance every Sep-1+ Logistics Recovery case across all six agents.
 
-    Cases with genuine agent work are locked to their existing owner and are
-    never reassigned. Untouched cases dated 01 Sep 2026 onward are redistributed
-    around those locked cases to make the six-agent totals as even as possible.
-    REASSIGN audit rows created by earlier balancing runs do not count as agent
-    work. Earlier cases are never changed.
+    Worked, delivered, and closed cases are included in the equal split.
+    Earlier cases remain untouched in storage and are excluded from the agent
+    assignment cohort.
     """
     cases = load_cases()
-    activity = load_activity()
     if cases.empty:
         zero = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
         return {
@@ -199,55 +196,16 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
             "assignment_exact": True,
         }
 
-    # Only real work locks a case. Historical automatic REASSIGN audit entries
-    # are intentionally ignored so untouched cases can still be balanced.
-    worked_activity_ids: set[str] = set()
-    if not activity.empty and "Case ID" in activity.columns:
-        activity_types = activity.get(
-            "Action Type",
-            pd.Series("", index=activity.index, dtype=str),
-        ).fillna("").astype(str).str.strip().str.upper()
-        real_activity = activity[~activity_types.eq("REASSIGN")]
-        worked_activity_ids = {
-            _text(value)
-            for value in real_activity["Case ID"].tolist()
-            if _text(value)
-        }
-
-    def _worked(row: pd.Series) -> bool:
-        case_id = _text(row.get("Case ID"))
-        calls = pd.to_numeric(
-            pd.Series([row.get("Total Call Attempts", "")]),
-            errors="coerce",
-        ).fillna(0).iloc[0]
-        work_status = _text(row.get("Logistics Work Status")).upper()
-        return bool(
-            calls > 0
-            or case_id in worked_activity_ids
-            or work_status not in {"", "NEW"}
-            or _text(row.get("Last Call At"))
-            or _text(row.get("Last Call Status"))
-            or _text(row.get("Customer Response"))
-            or _text(row.get("Next Follow-up"))
-            or _text(row.get("Agent Remark"))
-            or _text(row.get("Logistics Final Outcome"))
-            or _text(row.get("Closed At"))
-            or _text(row.get("Delivered After Coordination")).upper() == "YES"
-        )
-
-    locked_indexes = [
-        index for index, row in cohort.iterrows() if _worked(row)
-    ]
-    movable_indexes = [
-        index for index in cohort.index if index not in set(locked_indexes)
-    ]
-
-    locked = cohort.loc[locked_indexes].copy()
-    movable = cohort.loc[movable_indexes].copy()
+    # The Sep-1+ reset now includes every case, even if it already has agent work.
+    # Existing ownership is preserved only where it still fits the equal six-agent target.
+    locked_indexes: list[int] = []
+    movable_indexes = cohort.index.tolist()
+    locked = cohort.iloc[0:0].copy()
+    movable = cohort.copy()
     locked_counts = assignment_counts(locked)
     targets = target_counts(len(cohort))
 
-    # Allocate all untouched cases around the locked historical ownership.
+    # Allocate the complete Sep-1+ cohort equally across all six agents.
     planned_additions = weighted_assignments(len(movable), locked_counts)
     needed = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
     for agent in planned_additions:
@@ -346,8 +304,8 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
                 "Call Result": "",
                 "Customer Response": "",
                 "Remark": (
-                    f"Untouched case balanced from {old_agent or 'UNASSIGNED'} to {new_agent} "
-                    "under equal six-agent policy from 01 Sep 2026"
+                    f"Sep-1+ equal split changed assignment from "
+                    f"{old_agent or 'UNASSIGNED'} to {new_agent}"
                 ),
                 "Next Follow-up": current.get("Next Follow-up", ""),
                 "Previous Work Status": current.get("Logistics Work Status", ""),

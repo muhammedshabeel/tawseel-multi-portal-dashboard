@@ -149,6 +149,21 @@ with st.spinner("Loading logistics workspace..."):
         st.stop()
 
 filter_dates, filter_date_label = _global_filter_dates(all_cases)
+
+# Logistics Recovery agent dashboards are intentionally limited to 01 Sep 2026
+# onward. Older cases stay in the backing sheet for history/backup, but are not
+# shown in agent workspaces, metrics, queues, reports, or activity views.
+dashboard_cutoff = pd.Timestamp("2026-09-01")
+sep1_mask = filter_dates.dt.normalize().ge(dashboard_cutoff).fillna(False)
+all_cases = all_cases[sep1_mask].copy()
+filter_dates = filter_dates.loc[all_cases.index]
+
+if not activity.empty and "Case ID" in activity.columns and "Case ID" in all_cases.columns:
+    visible_case_ids = set(all_cases["Case ID"].fillna("").astype(str))
+    activity = activity[
+        activity["Case ID"].fillna("").astype(str).isin(visible_case_ids)
+    ].copy()
+
 valid_filter_dates = filter_dates.dropna()
 date_filter_enabled = not valid_filter_dates.empty
 
