@@ -9,7 +9,7 @@ import streamlit as st
 from src.logistics import add_activity, close_case
 from src.logistics_dashboard_metrics import logistics_case_masks
 from src.logistics_integrations import normalize_phone, phone_display
-from src.logistics_links import doubletick_chat_link, threecx_webclient_url
+from src.logistics_links import doubletick_chat_link, threecx_call_link
 
 BOARD_STAGES = (
     "New",
@@ -357,7 +357,7 @@ def _render_drawer(
         if valid_phone:
             st.link_button(
                 "📞 Open 3CX",
-                threecx_webclient_url(),
+                threecx_call_link(valid_phone),
                 width="stretch",
             )
             st.link_button(
