@@ -702,6 +702,55 @@ def _order_drawer(
     issue = _text(selected.get("Courier Remarks")) or "No courier remark"
     valid_phone = normalize_phone(selected.get("Mobile", ""))
 
+    # Re-open the drawer with the latest saved activity values instead of
+    # resetting Call result / Customer response / Action back to blank defaults.
+    current_call_result = _text(selected.get("Last Call Status"))
+    current_customer_response = _text(selected.get("Customer Response"))
+    current_remark = _text(selected.get("Agent Remark"))
+    current_next_follow_up = _text(selected.get("Next Follow-up"))
+
+    latest_action = "CALL"
+    case_activity = activity[
+        activity.get("Case ID", pd.Series("", index=activity.index, dtype=str))
+        .fillna("")
+        .astype(str)
+        .eq(case_id)
+    ].copy()
+    if not case_activity.empty:
+        action_types = case_activity.get(
+            "Action Type",
+            pd.Series("", index=case_activity.index, dtype=str),
+        ).fillna("").astype(str).str.strip().str.upper()
+        real_activity = case_activity[~action_types.eq("REASSIGN")].copy()
+        if not real_activity.empty:
+            if "Action At" in real_activity.columns:
+                real_activity["_action_sort"] = pd.to_datetime(
+                    real_activity["Action At"],
+                    errors="coerce",
+                    format="mixed",
+                )
+                real_activity = real_activity.sort_values(
+                    "_action_sort",
+                    ascending=False,
+                    na_position="last",
+                )
+            saved_action = _text(real_activity.iloc[0].get("Action Type")).upper()
+            if saved_action:
+                latest_action = saved_action
+
+    saved_follow_date = None
+    saved_follow_time = None
+    if current_next_follow_up:
+        parsed_follow_up = pd.to_datetime(
+            current_next_follow_up,
+            errors="coerce",
+            format="mixed",
+        )
+        if not pd.isna(parsed_follow_up):
+            saved_follow_date = parsed_follow_up.date()
+            if parsed_follow_up.hour or parsed_follow_up.minute:
+                saved_follow_time = parsed_follow_up.time().replace(second=0, microsecond=0)
+
     with st.container(height=440, border=False, key=f"drawer_scroll_{case_id}"):
         st.markdown(
             f'<div class="lk-drawer-title">{escape(customer)}</div>'
@@ -761,9 +810,22 @@ def _order_drawer(
             )
 
             action_col, status_col = st.columns(2, gap="small")
+            action_options = [
+                "CALL",
+                "WHATSAPP",
+                "COURIER_COORDINATION",
+                "NOTE",
+                "ESCALATION",
+            ]
+            action_index = (
+                action_options.index(latest_action)
+                if latest_action in action_options
+                else 0
+            )
             action = action_col.selectbox(
                 "Action",
-                ["CALL", "WHATSAPP", "COURIER_COORDINATION", "NOTE", "ESCALATION"],
+                action_options,
+                index=action_index,
                 key=f"drawer_action_{agent}_{case_id}",
             )
             work_status = status_col.selectbox(
@@ -774,38 +836,52 @@ def _order_drawer(
             )
 
             result_col, response_col = st.columns(2, gap="small")
+            call_result_options = [
+                "",
+                "Answered",
+                "No Answer",
+                "Switched Off",
+                "Busy",
+                "Invalid Number",
+                "Call Back Later",
+            ]
+            call_result_index = (
+                call_result_options.index(current_call_result)
+                if current_call_result in call_result_options
+                else 0
+            )
             call_result = result_col.selectbox(
                 "Call result",
-                [
-                    "",
-                    "Answered",
-                    "No Answer",
-                    "Switched Off",
-                    "Busy",
-                    "Invalid Number",
-                    "Call Back Later",
-                ],
+                call_result_options,
+                index=call_result_index,
                 key=f"drawer_call_result_{agent}_{case_id}",
+            )
+            response_index = (
+                response_options.index(current_customer_response)
+                if current_customer_response in response_options
+                else 0
             )
             customer_response = response_col.selectbox(
                 "Customer response",
                 response_options,
+                index=response_index,
                 key=f"drawer_response_{agent}_{case_id}",
             )
 
             follow_col, time_col = st.columns(2, gap="small")
             follow_date = follow_col.date_input(
                 "Next date",
-                value=None,
+                value=saved_follow_date,
                 key=f"drawer_follow_date_{agent}_{case_id}",
             )
             follow_time = time_col.time_input(
                 "Next time",
-                value=None,
+                value=saved_follow_time,
                 key=f"drawer_follow_time_{agent}_{case_id}",
             )
             remark = st.text_area(
                 "Remark",
+                value=current_remark,
                 height=62,
                 placeholder="Add a short update...",
                 key=f"drawer_remark_{agent}_{case_id}",
