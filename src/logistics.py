@@ -300,11 +300,18 @@ def _load_settings() -> tuple[dict[str, str], dict[str, int]]:
 
 def _next_agents(count: int) -> tuple[list[str], int, int]:
     settings, rows = _load_settings()
-    agents = [
-        agent.strip().upper()
-        for agent in settings.get("ROUND_ROBIN_AGENTS", ",".join(AGENTS)).split(",")
-        if agent.strip()
-    ] or AGENTS.copy()
+
+    # The code-level agent roster is authoritative. This prevents an older
+    # LOGISTICS_SETTINGS value from excluding newly added recovery agents.
+    agents = AGENTS.copy()
+    configured = ",".join(agents)
+    if settings.get("ROUND_ROBIN_AGENTS", "") != configured:
+        agents_row = rows.get("ROUND_ROBIN_AGENTS", 2)
+        _worksheet("LOGISTICS_SETTINGS").update(
+            f"B{agents_row}",
+            [[configured]],
+            value_input_option="USER_ENTERED",
+        )
 
     try:
         start = int(settings.get("NEXT_AGENT_INDEX", "0")) % len(agents)
