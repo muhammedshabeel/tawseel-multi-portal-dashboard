@@ -47,6 +47,7 @@ STANDARD_RESPONSES = [
     "",
     "Will Receive",
     "Requested Reschedule",
+    "Urgent Delivery",
     "Customer Unavailable",
     "Location Changed",
     "Payment Issue",
@@ -59,6 +60,7 @@ STANDARD_RESPONSES = [
 RTO_RESPONSES = [
     "",
     "Will Receive",
+    "Urgent Delivery",
     "Customer Unavailable",
     "Location Changed",
     "Payment Issue",
@@ -1064,6 +1066,7 @@ def _render_delivered_review_bulk(
                     "Keep current",
                     "Will Receive",
                     "Requested Reschedule",
+                    "Urgent Delivery",
                     "Customer Unavailable",
                     "Location Changed",
                     "Payment Issue",
