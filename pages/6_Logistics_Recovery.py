@@ -242,16 +242,17 @@ all_cases = _safe_frame(all_cases)
 activity = _safe_frame(activity)
 overall, agent_summary = logistics_dashboard_summary(all_cases)
 
-k1, k2, k3, k4, k5, k6, k7, k8, k9 = st.columns(9)
+k1, k2, k3, k4, k5, k6, k7, k8, k9, k10 = st.columns(10)
 k1.metric("Assigned", int(overall["Assigned"]))
 k2.metric("Active", int(overall["Active"]))
 k3.metric("RTO", int(overall["RTO"]))
 k4.metric("Recovered from RTO", int(overall["Recovered from RTO"]))
 k5.metric("Tawseel Delivered", int(overall["Tawseel Delivered"]))
 k6.metric("Pending Review", int(overall["Delivered Pending Review"]))
-k7.metric("Closed", int(overall["Closed"]))
-k8.metric("Recovered", int(overall["Delivered After Coordination"]))
-k9.metric("Recovery Rate", f"{float(overall['Recovery Rate']):.1%}")
+k7.metric("No Response", int(overall["No Response"]))
+k8.metric("Closed", int(overall["Closed"]))
+k9.metric("Recovered", int(overall["Delivered After Coordination"]))
+k10.metric("Recovery Rate", f"{float(overall['Recovery Rate']):.1%}")
 
 if identity == "MANAGER":
     overview_tab, queue_tab, review_tab, workspace_tab, report_tab, history_tab = st.tabs(

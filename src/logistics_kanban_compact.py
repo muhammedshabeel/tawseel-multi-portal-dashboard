@@ -35,6 +35,7 @@ STAGE_META = {
 
 RTO_WORK_STATUS_OPTIONS = [
     "IN PROGRESS",
+    "NO RESPONSE",
     "FOLLOW-UP DUE",
     "CUSTOMER CONTACTED",
     "AWAITING COURIER",
@@ -48,6 +49,7 @@ STANDARD_RESPONSES = [
     "Will Receive",
     "Requested Reschedule",
     "Urgent Delivery",
+    "No Response",
     "Customer Unavailable",
     "Location Changed",
     "Payment Issue",
@@ -61,6 +63,7 @@ RTO_RESPONSES = [
     "",
     "Will Receive",
     "Urgent Delivery",
+    "No Response",
     "Customer Unavailable",
     "Location Changed",
     "Payment Issue",
@@ -1052,6 +1055,7 @@ def _render_delivered_review_bulk(
                 [
                     "Keep current",
                     "IN PROGRESS",
+                    "NO RESPONSE",
                     "FOLLOW-UP DUE",
                     "CUSTOMER CONTACTED",
                     "RESCHEDULED",
@@ -1067,6 +1071,7 @@ def _render_delivered_review_bulk(
                     "Will Receive",
                     "Requested Reschedule",
                     "Urgent Delivery",
+                    "No Response",
                     "Customer Unavailable",
                     "Location Changed",
                     "Payment Issue",
@@ -1280,11 +1285,26 @@ def render_logistics_kanban_compact(
         .fillna(0)
         .sum()
     )
+    no_response_count = int(
+        (
+            assigned_all.get(
+                "Logistics Work Status",
+                pd.Series("", index=assigned_all.index, dtype=str),
+            ).fillna("").astype(str).str.strip().str.upper().eq("NO RESPONSE")
+            |
+            assigned_all.get(
+                "Customer Response",
+                pd.Series("", index=assigned_all.index, dtype=str),
+            ).fillna("").astype(str).str.strip().str.casefold().eq("no response")
+        ).sum()
+    )
+
     st.markdown(
         f"""
         <div class="lk-secondary-strip">
             <div class="lk-secondary-item"><span>Tawseel Delivered</span><strong>{int(_mask(masks, 'tawseel_delivered', assigned_all.index).sum()):,}</strong></div>
             <div class="lk-secondary-item"><span>Pending Review</span><strong>{int(_mask(masks, 'pending_review', assigned_all.index).sum()):,}</strong></div>
+            <div class="lk-secondary-item"><span>No Response</span><strong>{no_response_count:,}</strong></div>
             <div class="lk-secondary-item"><span>Calls Logged</span><strong>{total_calls:,}</strong></div>
             <div class="lk-secondary-item"><span>Total Recovered</span><strong>{int(_mask(masks, 'recovered', assigned_all.index).sum()):,}</strong></div>
         </div>

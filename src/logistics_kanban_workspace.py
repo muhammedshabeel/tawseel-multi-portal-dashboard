@@ -21,6 +21,7 @@ BOARD_STAGES = (
 
 WORK_STATUS_OPTIONS = [
     "IN PROGRESS",
+    "NO RESPONSE",
     "FOLLOW-UP DUE",
     "CUSTOMER CONTACTED",
     "RESCHEDULED",
@@ -118,6 +119,7 @@ def _stage_series(cases: pd.DataFrame) -> pd.Series:
     stage.loc[
         work_status.isin(
             [
+                "NO RESPONSE",
                 "FOLLOW-UP DUE",
                 "RESCHEDULED",
                 "AWAITING COURIER",
@@ -215,6 +217,7 @@ def _render_activity_form(agent: str, selected: pd.Series) -> None:
                 "",
                 "Will Receive",
                 "Requested Reschedule",
+                "No Response",
                 "Customer Unavailable",
                 "Location Changed",
                 "Payment Issue",

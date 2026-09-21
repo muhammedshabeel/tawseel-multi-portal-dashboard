@@ -143,6 +143,7 @@ def logistics_dashboard_summary(
         "Recovered from RTO": 0,
         "Tawseel Delivered": 0,
         "Delivered Pending Review": 0,
+        "No Response": 0,
         "Closed": 0,
         "Delivered After Coordination": 0,
         "Recovery Rate": 0.0,
@@ -152,6 +153,10 @@ def logistics_dashboard_summary(
 
     masks = logistics_case_masks(cases)
     assigned = len(cases)
+    no_response = (
+        _status_series(cases, "Logistics Work Status").eq("no response")
+        | _status_series(cases, "Customer Response").eq("no response")
+    )
     overall = {
         "Assigned": assigned,
         "Active": int(masks["active"].sum()),
@@ -160,6 +165,7 @@ def logistics_dashboard_summary(
         "Recovered from RTO": int(masks["rto_converted"].sum()),
         "Tawseel Delivered": int(masks["tawseel_delivered"].sum()),
         "Delivered Pending Review": int(masks["pending_review"].sum()),
+        "No Response": int(no_response.sum()),
         "Closed": int(masks["closed"].sum()),
         "Delivered After Coordination": int(masks["recovered"].sum()),
         "Recovery Rate": (
@@ -171,6 +177,10 @@ def logistics_dashboard_summary(
     for agent, group in cases.groupby("Logistics Agent", dropna=False):
         group_masks = logistics_case_masks(group)
         group_assigned = len(group)
+        group_no_response = (
+            _status_series(group, "Logistics Work Status").eq("no response")
+            | _status_series(group, "Customer Response").eq("no response")
+        )
         rows.append(
             {
                 "Agent": str(agent).strip() or "Unassigned",
@@ -181,6 +191,7 @@ def logistics_dashboard_summary(
                 "Recovered from RTO": int(group_masks["rto_converted"].sum()),
                 "Tawseel Delivered": int(group_masks["tawseel_delivered"].sum()),
                 "Delivered Pending Review": int(group_masks["pending_review"].sum()),
+                "No Response": int(group_no_response.sum()),
                 "Closed": int(group_masks["closed"].sum()),
                 "Delivered After Coordination": int(group_masks["recovered"].sum()),
                 "Recovery Rate": (
