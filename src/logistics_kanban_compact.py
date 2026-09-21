@@ -19,7 +19,7 @@ from src.logistics_kanban_workspace import (
     _stage_series,
     _text,
 )
-from src.logistics_links import doubletick_chat_link, threecx_webclient_url
+from src.logistics_links import doubletick_chat_link, threecx_call_link
 
 
 KANBAN_STAGES = (*BOARD_STAGES, "RTO Converted")
@@ -777,7 +777,7 @@ def _order_drawer(
 
         call_col, chat_col = st.columns(2, gap="small")
         if valid_phone:
-            call_col.link_button("3CX", threecx_webclient_url(), width="stretch")
+            call_col.link_button("3CX", threecx_call_link(valid_phone), width="stretch")
             chat_col.link_button(
                 "DoubleTick", doubletick_chat_link(valid_phone), width="stretch"
             )
