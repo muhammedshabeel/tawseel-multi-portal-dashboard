@@ -6,15 +6,17 @@ from typing import Any
 
 import pandas as pd
 
-ASSIGNMENT_POLICY_VERSION = "2026-09-19-equal-from-sep1-v1"
+ASSIGNMENT_POLICY_VERSION = "2026-09-21-six-agent-equal-v1"
 ASSIGNMENT_WEIGHTS: dict[str, float] = {
-    "VAISHAKH": 0.25,
-    "NEETHU": 0.25,
-    "HASBIR": 0.25,
-    "AKHASH": 0.25,
+    "VAISHAKH": 1 / 6,
+    "NEETHU": 1 / 6,
+    "HASBIR": 1 / 6,
+    "AKHASH": 1 / 6,
+    "STUTHI": 1 / 6,
+    "AFNAN": 1 / 6,
 }
-ASSIGNMENT_ORDER = ["HASBIR", "AKHASH", "VAISHAKH", "NEETHU"]
-ASSIGNMENT_METHOD = "EQUAL_FROM_2026_09_01"
+ASSIGNMENT_ORDER = ["HASBIR", "AKHASH", "VAISHAKH", "NEETHU", "STUTHI", "AFNAN"]
+ASSIGNMENT_METHOD = "EQUAL_6_AGENTS_FROM_2026_09_01"
 
 
 def _text(value: Any) -> str:
@@ -73,7 +75,7 @@ def weighted_assignments(
     count: int,
     current_counts: dict[str, int] | None = None,
 ) -> list[str]:
-    """Assign new cases to the largest deficit against the equal 25/25/25/25 target."""
+    """Assign new cases to the largest deficit against the equal six-agent target."""
     counts = {
         agent: int((current_counts or {}).get(agent, 0))
         for agent in ASSIGNMENT_WEIGHTS
@@ -238,7 +240,7 @@ def plan_safe_rebalance(
 def apply_weighted_assignment_policy() -> dict[str, Any]:
     """Apply the equal assignment policy to current safe cases and future batches.
 
-    Each logistics agent receives 25% of the assignment cohort.
+    Each logistics agent receives an equal one-sixth share of the assignment cohort.
     Existing cases with any agent work or audit activity stay with their current
     owner. Untouched active cases are redistributed, and every change is logged.
     """
