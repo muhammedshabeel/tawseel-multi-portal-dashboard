@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from src.logistics import add_activity, close_case
+from src.logistics import add_activity, add_manual_case, close_case
 from src.logistics_dashboard_metrics import logistics_case_masks
 from src.logistics_integrations import normalize_phone, phone_display
 from src.logistics_kanban_workspace import (
@@ -897,6 +897,62 @@ def _render_card(
             _order_drawer(agent, case_id, assigned_all, activity)
 
 
+def _render_manual_add(agent: str) -> None:
+    """Render the compact manual-add form for an agent's New column."""
+    with st.popover("+ Add new", width="stretch"):
+        st.caption(f"Add a recovery case directly to {agent.title()}'s New queue.")
+        with st.form(f"manual_case_{_slug(agent)}", clear_on_submit=True):
+            awb = st.text_input("AWB / Order ID", placeholder="Required")
+            customer_name = st.text_input("Customer name", placeholder="Required")
+            mobile = st.text_input("Mobile", placeholder="Optional")
+
+            portal_col, priority_col = st.columns(2, gap="small")
+            portal = portal_col.text_input("Portal", value="MANUAL")
+            priority = priority_col.selectbox(
+                "Priority",
+                ["FOLLOW-UP", "CRITICAL"],
+            )
+
+            date_col, status_col = st.columns(2, gap="small")
+            scheduled_date = date_col.date_input(
+                "Scheduled date",
+                value=date.today(),
+            )
+            courier_status = status_col.text_input(
+                "Courier status",
+                placeholder="Optional",
+            )
+            courier_remarks = st.text_area(
+                "Remark / issue",
+                height=72,
+                placeholder="Reason this case needs recovery...",
+            )
+            submitted = st.form_submit_button(
+                "Add to New",
+                type="primary",
+                width="stretch",
+            )
+
+        if submitted:
+            try:
+                add_manual_case(
+                    agent=agent,
+                    awb=awb,
+                    customer_name=customer_name,
+                    mobile=mobile,
+                    portal=portal,
+                    scheduled_date=str(scheduled_date or ""),
+                    courier_status=courier_status,
+                    courier_remarks=courier_remarks,
+                    priority=priority,
+                )
+                st.toast("Manual recovery case added", icon="✅")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not add case - {_error_text(exc)}")
+
+
 def _export_frame(cases: pd.DataFrame) -> pd.DataFrame:
     columns = [column for column in EXPORT_COLUMNS if column in cases.columns]
     export = cases[columns].copy()
@@ -975,10 +1031,6 @@ def render_logistics_kanban_compact(
         """,
         unsafe_allow_html=True,
     )
-
-    if visible_all.empty:
-        st.info("No open or converted RTO cases assigned.")
-        return
 
     with st.container(key=f"kanban_filters_{_slug(agent)}"):
         search_col, focus_col, portal_col, date_col, export_col = st.columns(
@@ -1097,6 +1149,8 @@ def render_logistics_kanban_compact(
                 """,
                 unsafe_allow_html=True,
             )
+            if stage == "New":
+                _render_manual_add(agent)
             with st.container(
                 height=640,
                 border=False,
