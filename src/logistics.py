@@ -112,7 +112,7 @@ def _frame_from_values(values: list[list[Any]], headers: list[str]) -> pd.DataFr
     return frame[headers].fillna("").astype(str)
 
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
     response = logistics_book().values_batch_get(
         ["LOGISTICS_CASES", "LOGISTICS_ACTIVITY_LOG"],
