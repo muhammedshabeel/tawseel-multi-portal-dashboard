@@ -160,18 +160,16 @@ def _equal_assignment_cohort(
 
 
 def rebalance_logistics_assignments() -> dict[str, Any]:
-    """Equalize all Logistics Recovery cases dated 01 Sep 2026 onward.
+    """Balance Sep-1+ Logistics Recovery data across all six agents safely.
 
-    Every case in the cohort is eligible, including worked, delivered, and
-    closed cases, because the requested ownership reset applies to all Logistics
-    Recovery data from 01 Sep 2026 forward. Earlier cases are never changed.
-
-    The split is mathematically exact whenever the cohort total is divisible by
-    four. When it is not, integer targets differ by at most one case. Existing
-    owners are retained where possible to minimize unnecessary reassignment.
-    Every ownership change is appended to the audit log.
+    Cases with genuine agent work are locked to their existing owner and are
+    never reassigned. Untouched cases dated 01 Sep 2026 onward are redistributed
+    around those locked cases to make the six-agent totals as even as possible.
+    REASSIGN audit rows created by earlier balancing runs do not count as agent
+    work. Earlier cases are never changed.
     """
     cases = load_cases()
+    activity = load_activity()
     if cases.empty:
         zero = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
         return {
@@ -180,6 +178,7 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
             "assignment_scope_start": "2026-09-01",
             "reassigned": 0,
             "assignment_updated": 0,
+            "assignment_locked_worked": 0,
             "assignment_targets": zero,
             "assignment_after": zero,
             "assignment_exact": True,
@@ -194,28 +193,77 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
             "assignment_scope_start": "2026-09-01",
             "reassigned": 0,
             "assignment_updated": 0,
+            "assignment_locked_worked": 0,
             "assignment_targets": zero,
             "assignment_after": zero,
             "assignment_exact": True,
         }
 
+    # Only real work locks a case. Historical automatic REASSIGN audit entries
+    # are intentionally ignored so untouched cases can still be balanced.
+    worked_activity_ids: set[str] = set()
+    if not activity.empty and "Case ID" in activity.columns:
+        activity_types = activity.get(
+            "Action Type",
+            pd.Series("", index=activity.index, dtype=str),
+        ).fillna("").astype(str).str.strip().str.upper()
+        real_activity = activity[~activity_types.eq("REASSIGN")]
+        worked_activity_ids = {
+            _text(value)
+            for value in real_activity["Case ID"].tolist()
+            if _text(value)
+        }
+
+    def _worked(row: pd.Series) -> bool:
+        case_id = _text(row.get("Case ID"))
+        calls = pd.to_numeric(
+            pd.Series([row.get("Total Call Attempts", "")]),
+            errors="coerce",
+        ).fillna(0).iloc[0]
+        work_status = _text(row.get("Logistics Work Status")).upper()
+        return bool(
+            calls > 0
+            or case_id in worked_activity_ids
+            or work_status not in {"", "NEW"}
+            or _text(row.get("Last Call At"))
+            or _text(row.get("Last Call Status"))
+            or _text(row.get("Customer Response"))
+            or _text(row.get("Next Follow-up"))
+            or _text(row.get("Agent Remark"))
+            or _text(row.get("Logistics Final Outcome"))
+            or _text(row.get("Closed At"))
+            or _text(row.get("Delivered After Coordination")).upper() == "YES"
+        )
+
+    locked_indexes = [
+        index for index, row in cohort.iterrows() if _worked(row)
+    ]
+    movable_indexes = [
+        index for index in cohort.index if index not in set(locked_indexes)
+    ]
+
+    locked = cohort.loc[locked_indexes].copy()
+    movable = cohort.loc[movable_indexes].copy()
+    locked_counts = assignment_counts(locked)
     targets = target_counts(len(cohort))
 
-    work = cohort.copy()
-    work["_assigned_dt"] = pd.to_datetime(
-        work.get("Assigned At", pd.Series("", index=work.index)),
+    # Allocate all untouched cases around the locked historical ownership.
+    planned_additions = weighted_assignments(len(movable), locked_counts)
+    needed = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
+    for agent in planned_additions:
+        needed[agent] += 1
+
+    movable["_assigned_dt"] = pd.to_datetime(
+        movable.get("Assigned At", pd.Series("", index=movable.index)),
         errors="coerce",
         format="mixed",
     )
 
-    # Keep as many current assignments as each equal target allows. Older
-    # ownership is retained first, which minimizes changes while still reaching
-    # the exact target distribution.
     keep_indexes: set[int] = set()
     kept_by_agent: dict[str, int] = {agent: 0 for agent in ASSIGNMENT_WEIGHTS}
     for agent in ASSIGNMENT_ORDER:
-        group = work[
-            work["Logistics Agent"]
+        group = movable[
+            movable["Logistics Agent"]
             .fillna("")
             .astype(str)
             .str.strip()
@@ -229,12 +277,12 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
             ascending=[True, True],
             na_position="last",
         )
-        indexes = group.index.tolist()[: targets[agent]]
+        indexes = group.index.tolist()[: needed[agent]]
         keep_indexes.update(indexes)
         kept_by_agent[agent] = len(indexes)
 
-    overflow = work.loc[
-        [index for index in work.index if index not in keep_indexes]
+    overflow = movable.loc[
+        [index for index in movable.index if index not in keep_indexes]
     ].copy()
     if not overflow.empty:
         overflow = overflow.sort_values(
@@ -246,12 +294,12 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
     destinations: list[str] = []
     for agent in ASSIGNMENT_ORDER:
         destinations.extend(
-            [agent] * max(targets[agent] - kept_by_agent[agent], 0)
+            [agent] * max(needed[agent] - kept_by_agent[agent], 0)
         )
 
     if len(destinations) != len(overflow):
         raise RuntimeError(
-            "Equal assignment planning mismatch: "
+            "Six-agent assignment planning mismatch: "
             f"{len(destinations)} destinations for {len(overflow)} cases"
         )
 
@@ -265,7 +313,7 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
     activity_rows: list[list[str]] = []
     reassigned = 0
 
-    for index in cohort.index:
+    for index in movable.index:
         current = cases.loc[index].to_dict()
         old_agent = _text(current.get("Logistics Agent")).upper()
         new_agent = planned_agent.get(index, old_agent)
@@ -298,8 +346,8 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
                 "Call Result": "",
                 "Customer Response": "",
                 "Remark": (
-                    f"Assignment changed from {old_agent or 'UNASSIGNED'} to {new_agent} "
-                    "under equal Logistics Recovery policy from 01 Sep 2026"
+                    f"Untouched case balanced from {old_agent or 'UNASSIGNED'} to {new_agent} "
+                    "under equal six-agent policy from 01 Sep 2026"
                 ),
                 "Next Follow-up": current.get("Next Follow-up", ""),
                 "Previous Work Status": current.get("Logistics Work Status", ""),
@@ -333,6 +381,8 @@ def rebalance_logistics_assignments() -> dict[str, Any]:
         "assignment_policy_version": ASSIGNMENT_POLICY_VERSION,
         "assignment_scope_start": "2026-09-01",
         "assignment_scope_total": len(refreshed_cohort),
+        "assignment_locked_worked": len(locked_indexes),
+        "assignment_movable": len(movable_indexes),
         "reassigned": reassigned,
         "assignment_updated": len(row_updates),
         "assignment_targets": targets,
