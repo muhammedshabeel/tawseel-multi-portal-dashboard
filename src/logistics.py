@@ -21,7 +21,7 @@ WRITE_SCOPES = [
 ]
 
 DEFAULT_LOGISTICS_SHEET_ID = "1-1ZyZDZyqKdmFWYX7WYtriUk04FDfeHMup7v9nOBNO0"
-AGENTS = ["VAISHAKH", "HASBIR", "AKHASH", "NEETHU"]
+AGENTS = ["VAISHAKH", "HASBIR", "AKHASH", "NEETHU", "STUTHI", "AFNAN"]
 
 CASE_HEADERS = [
     "Case ID", "Portal", "AWB", "Customer Name", "Mobile", "Scheduled Date",
@@ -189,6 +189,88 @@ def ensure_logistics_structure() -> None:
 def make_case_id(portal: str, awb: str) -> str:
     raw = f"{portal.strip().casefold()}|{awb.strip()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20].upper()
+
+
+def add_manual_case(
+    *,
+    agent: str,
+    awb: str,
+    customer_name: str,
+    mobile: str = "",
+    portal: str = "MANUAL",
+    scheduled_date: str = "",
+    courier_status: str = "",
+    courier_remarks: str = "",
+    priority: str = "FOLLOW-UP",
+) -> str:
+    """Add one manual Logistics Recovery case directly to an agent's New queue."""
+    clean_agent = _text(agent).upper()
+    if clean_agent not in AGENTS:
+        raise ValueError("Invalid logistics agent")
+
+    clean_awb = _text(awb)
+    clean_customer = _text(customer_name)
+    clean_portal = _text(portal) or "MANUAL"
+    if not clean_awb:
+        raise ValueError("AWB is required")
+    if not clean_customer:
+        raise ValueError("Customer name is required")
+
+    with _WRITE_LOCK:
+        ensure_logistics_structure()
+        cases = load_cases()
+        case_id = make_case_id(clean_portal, clean_awb)
+
+        if not cases.empty:
+            duplicate_case = cases.get(
+                "Case ID", pd.Series("", index=cases.index, dtype=str)
+            ).fillna("").astype(str).eq(case_id)
+            duplicate_awb = (
+                cases.get("AWB", pd.Series("", index=cases.index, dtype=str))
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.casefold()
+                .eq(clean_awb.casefold())
+            )
+            if duplicate_case.any() or duplicate_awb.any():
+                raise ValueError("This AWB already exists in Logistics Recovery")
+
+        now = _now()
+        clean_priority = _text(priority).upper() or "FOLLOW-UP"
+        issue = (
+            "Critical Delivery Issue"
+            if "CRITICAL" in clean_priority
+            else "Manual Recovery Case"
+        )
+        record = {
+            "Case ID": case_id,
+            "Portal": clean_portal,
+            "AWB": clean_awb,
+            "Customer Name": clean_customer,
+            "Mobile": _text(mobile),
+            "Scheduled Date": _text(scheduled_date),
+            "Source Courier Status": _text(courier_status),
+            "Latest Courier Status": _text(courier_status),
+            "Courier Remarks": _text(courier_remarks),
+            "Original Agent": "",
+            "Priority": clean_priority,
+            "Issue Category": issue,
+            "Logistics Agent": clean_agent,
+            "Assigned At": now,
+            "Assignment Method": "MANUAL",
+            "Logistics Work Status": "NEW",
+            "Total Call Attempts": "0",
+            "Created At": now,
+            "Updated At": now,
+        }
+
+        _worksheet("LOGISTICS_CASES").append_row(
+            _row_values(record, CASE_HEADERS),
+            value_input_option="USER_ENTERED",
+        )
+        _clear_table_cache()
+        return case_id
 
 
 def _operational_sources() -> tuple[pd.DataFrame, pd.DataFrame]:
